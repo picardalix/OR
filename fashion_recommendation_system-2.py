@@ -1,14 +1,14 @@
-from __future__ import annotations
+
+
 import os
 import json
 from pathlib import Path
 from collections import defaultdict
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 from dataclasses import dataclass
 import numpy as np
 from PIL import Image, ImageFilter, ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
-
 
 import torch
 from sklearn.preprocessing import normalize
@@ -25,12 +25,17 @@ except Exception:
 # FashionCLIP
 from fashion_clip.fashion_clip import FashionCLIP
 
-# Tes modules
-from advanced_outfit_analysis import AdvancedOutfitScorer, OutfitFilter
+from advanced_outfit_analysis import (
+    OutfitFilter,
+    AdvancedOutfitScorer,
+    ColorAnalyzer,
+    SeasonalClassifier
+)
 
-
+from user_preferences import UserPreferences, apply_preference_rerank
 
 # -------------------- Data structures --------------------
+
 
 @dataclass
 class Article:
@@ -43,9 +48,6 @@ class Article:
     image_path: str
     embedding: Optional[np.ndarray] = None
     bbox: Optional[List[float]] = None
-    # NOTE: champ non bloquant ; si absent, on utilisera image_path
-    # (on ne change pas la structure des fichiers/datasets)
-    # Ajout utile pour afficher les crops si présents
     crop_path: Optional[str] = None
 
 
@@ -113,16 +115,14 @@ class DataLoader:
             self.load_annotations()
 
         if target_groups is None:
-            target_groups = ["top", "bottom", "shoes"]
+            target_groups = ["top", "bottom", "shoes", "bag", "accessory"]
 
         category_map = {cat["id"]: cat["name"] for cat in self.annotations["categories"]}
         images_by_id = {img["id"]: img for img in self.annotations["images"]}
 
         articles: List[Article] = []
-        debug_counts = {"processed": 0, "no_group": 0, "no_image": 0, "no_file": 0, "valid": 0}
         
         for annotation in self.annotations["annotations"]:
-            debug_counts["processed"] += 1
             
             if len(articles) >= max_articles:
                 break
@@ -131,20 +131,15 @@ class DataLoader:
             group = self._map_category_to_group(category_name)
             
             if group not in target_groups:
-                debug_counts["no_group"] += 1
                 continue
 
             image_info = images_by_id.get(annotation["image_id"])
             if not image_info:
-                debug_counts["no_image"] += 1
                 continue
                 
             image_path = self.image_dir / image_info["file_name"]
             if not image_path.exists():
-                debug_counts["no_file"] += 1
                 continue
-
-            debug_counts["valid"] += 1
 
             article = Article(
                 id=f"{annotation['image_id']}_{annotation['id']}",
@@ -156,7 +151,6 @@ class DataLoader:
                 bbox=annotation["bbox"]
             )
             articles.append(article)
-        print(f"DEBUG extract_articles: {debug_counts}")
         return articles
 
 
@@ -302,9 +296,6 @@ class EmbeddingGenerator:
         embeddings: List[Optional[np.ndarray]] = []
 
         missing_files = [p for p in image_paths if not os.path.exists(p)]
-        print(f"DEBUG: {len(missing_files)}/{len(image_paths)} fichiers manquants")
-        if missing_files[:3]:
-            print(f"DEBUG: exemples manquants: {missing_files[:3]}")
 
         # IMPORTANT : encoder seulement les fichiers existants
         for i in range(0, len(image_paths), batch_size):
@@ -327,14 +318,6 @@ class EmbeddingGenerator:
                     embeddings.append(next(it))
                 else:
                     embeddings.append(None)
-
-        # Logs de contrôle
-        nnz = sum(1 for e in embeddings if e is not None)
-        print(f"DEBUG: embeddings générés = {len(embeddings)} ; non-nulls = {nnz}")
-        if nnz:
-            # Montre min/max/norm du premier non-null
-            e0 = next(e for e in embeddings if e is not None)
-            print(f"DEBUG: exemple norm={np.linalg.norm(e0):.6f} min={np.min(e0):.6f} max={np.max(e0):.6f}")
 
         return embeddings
 
@@ -431,7 +414,6 @@ class SimilarityEngine:
     # Nouveau : ANN pool top-K
     def ann_search(self, query_embedding: np.ndarray, target_group: str, topk: int = 100) -> List[Tuple[float, int, np.ndarray]]:
         if target_group not in self.ann_by_group:
-            print(f"DEBUG: Groupe '{target_group}' introuvable dans {list(self.ann_by_group.keys())}")
             return []
         
         q = normalize(query_embedding.reshape(1, -1), norm='l2')[0]
@@ -447,7 +429,6 @@ class SimilarityEngine:
             out.append((sim, art_idx, emb))
         # tri décroissant par similarité brute
         out.sort(key=lambda x: x[0], reverse=True)
-        print(f"DEBUG: ann_search({target_group}, {topk}) -> {len(out)} résultats")
         return out
 
 
@@ -581,10 +562,27 @@ class OutfitRecommender:
                 best_group = group
         return best_group if best_sim > 0.1 else None
 
+    def detect_slot_from_image(self, image_path: str) -> Optional[str]:
+        """Détecte le groupe (slot) dominant de l'image requête via ANN,
+        en réutilisant _detect_query_group côté recommender."""
+        # 1) Encodage de l'image -> embedding (uniquement EmbeddingGenerator)
+        emb_gen = EmbeddingGenerator()
+        embs = emb_gen.generate_embeddings([image_path])
+        if not embs or embs[0] is None:
+            return None
+
+        emb = np.asarray(embs[0])
+
+        # 2) Appel de la logique existante côté recommender
+        if hasattr(self, "recommender") and self.recommender:
+            return self.recommender._detect_query_group(emb)
+
+        return None
+
     def _select_from_group(self, query_embedding: np.ndarray,
-                           group: str,
-                           selected_items: List[Article],
-                           selected_embs: List[np.ndarray]) -> Optional[Article]:
+                       group: str,
+                       selected_items: List[Article],
+                       selected_embs: List[np.ndarray]) -> Optional[Article]:
         pool = self.engine.ann_search(query_embedding, group, topk=self.pool_size)
         if not pool:
             return None
@@ -592,30 +590,59 @@ class OutfitRecommender:
         # Re-ranking par score combiné
         scored = []
         for sim_q, idx, emb in pool:
-            # Cohérence marginale simple : coherence({selected + cand})
             cand = self.engine.articles[idx]
             tmp_items = selected_items + [cand]
             adv = self.advanced_scorer.calculate_advanced_score(tmp_items, [1.0] * len(tmp_items))
             coh = float(adv.overall_score)
             red = max((float(np.dot(emb, s)) for s in selected_embs), default=0.0)
             score = self.w_cos * sim_q + self.w_coh * coh - self.w_red * red
-            scored.append((score, sim_q, idx, emb))
+            scored.append((score, sim_q, idx, emb, coh))  # Ajout de coh
 
         scored.sort(key=lambda x: x[0], reverse=True)
-        # MMR diversité
-        mmr_order = mmr_rerank([(sim_q, idx, emb) for _, sim_q, idx, emb in scored],
-                               selected_embs,
-                               lambda_div=self.mmr_lambda,
-                               topk=max(1, self.topk_per_slot))
+        mmr_order = mmr_rerank([(sim_q, idx, emb) for _, sim_q, idx, emb, _ in scored],
+                            selected_embs,
+                            lambda_div=self.mmr_lambda,
+                            topk=max(1, self.topk_per_slot))
         if not mmr_order:
             return None
-        return self.engine.articles[mmr_order[0]]
 
-    def recommend_outfit(self, query_image_path: str,
-                         target_groups: List[str] = None,
-                         similarity_threshold: float = 0.3,
-                         use_advanced_scoring: bool = True) -> Optional[Outfit]:
-        """Version single-outfit (compatible ancienne interface)"""
+        selected_art = self.engine.articles[mmr_order[0]]
+
+        for score, sim_q, idx, emb, coh in scored:
+            if idx == mmr_order[0]:
+                # Calcul des scores individuels pour cet article
+                crop_path = getattr(selected_art, "crop_path", selected_art.image_path)
+                if crop_path and os.path.exists(crop_path):
+                    try:
+                        color_analysis = self.advanced_scorer.color_analyzer.analyze_colors(crop_path)
+                        seasonal_profile = self.advanced_scorer.seasonal_classifier.classify_season(
+                            selected_art.category_name, 
+                            [str(attr) for attr in selected_art.attributes],
+                            color_analysis
+                        )
+                        selected_art.scores = {
+                            "cosine": sim_q,
+                            "color": color_analysis.color_harmony_score,
+                            "season": seasonal_profile.confidence
+                        }
+                    except Exception as e:
+                        print(f"Erreur calcul scores individuels: {e}")
+                        selected_art.scores = {"cosine": sim_q, "color": 0.0, "season": 0.0}
+                else:
+                    selected_art.scores = {"cosine": sim_q, "color": 0.0, "season": 0.0}
+                break
+
+        return selected_art
+
+    def recommend_outfit(self,
+    query_image_path: str,
+    target_groups: Optional[List[str]] = None,
+    similarity_threshold: float = 0.3,
+    use_advanced_scoring: bool = True,
+    preferences: Optional[UserPreferences] = None,
+    pref_weight: float = 0.35
+) -> Optional[Outfit]:
+        """Version single-outfit """
         if target_groups is None:
             target_groups = ["top", "bottom", "shoes"]
 
@@ -678,7 +705,6 @@ class OutfitRecommender:
 
             # Si même la relaxation échoue, retourner le meilleur disponible
             if not outfit:
-                print("DEBUG: Tentative sans aucun filtre...")
                 for g in groups:
                     art = self._select_from_group(q, g, selected, selected_embs)
                     if art:
@@ -689,44 +715,83 @@ class OutfitRecommender:
                 if selected:
                     outfit = Outfit(items=selected, similarities=sims, coherence_score=0.1)
                     outfit.fallback_mode = True  # type: ignore[attr-defined]
+            # Appliquer le re-ranking par préférences si fourni
+            pref_weight = float(max(0.0, min(1.0, pref_weight)))
+            if preferences:
+                try:
+                    from user_preferences import PreferenceScorer
+                    scorer = PreferenceScorer()
+                    pref = float(scorer.outfit_preference_score(outfit, preferences))
+                    outfit.preference_score = pref
+                    base = float(getattr(outfit, "coherence_score", 0.0))
+                    outfit.rank_score = (1.0 - pref_weight) * base + pref_weight * pref
+                except Exception as e:
+                    print(f"Erreur calcul préférences: {e}")  # Pour débugger
+                    outfit.preference_score = 0.0
+                    outfit.rank_score = float(getattr(outfit, "coherence_score", 0.0))
+            else:
+                outfit.preference_score = None
+                outfit.rank_score = float(getattr(outfit, "coherence_score", 0.0))
+
             return outfit
 
 
     # --------- Mode Builder (plusieurs tenues possibles) ---------
-
     def recommend_outfits_builder(self,
-                                  query_image_path: str,
-                                  slots: List[str],
-                                  topk_per_slot: int = 10,
-                                  beam_size: int = 10,
-                                  max_outfits: int = 3,
-                                  rules: Optional[Dict] = None) -> List[Outfit]:
+    query_image_path: str,
+    slots: List[str],
+    topk_per_slot: int = 10,
+    beam_size: int = 10,
+    max_outfits: int = 3,
+    rules: Optional[Dict] = None,
+    locks: Optional[Dict[str, Any]] = None,
+    preferences: Optional[UserPreferences] = None,
+    pref_weight: float = 0.35
+) -> List[Outfit]:
+        
+        """Construit des tenues par slots, applique filtres qualité et rerank préférences."""
+     
+        pref_weight = float(max(0.0, min(1.0, pref_weight)))
+
         emb_gen = EmbeddingGenerator()
         q_embs = emb_gen.generate_embeddings([query_image_path])
         if not q_embs or q_embs[0] is None:
             return []
-        q = q_embs[0]
-
-        # Prépare les candidats par slot via ANN + re-ranking+MMR (indépendant entre slots)
+        q = np.asarray(q_embs[0])
+        # — 2) candidats par slot (ANN + MMR)
         slot_to_cands: Dict[str, List[Article]] = {}
         for slot in slots:
             pool = self.engine.ann_search(q, slot, topk=max(self.pool_size, topk_per_slot))
             if not pool:
                 slot_to_cands[slot] = []
                 continue
-            # simple MMR vs query pour diversité intragroup
             order = mmr_rerank(pool, selected_embs=[], lambda_div=self.mmr_lambda, topk=topk_per_slot)
-            slot_to_cands[slot] = [self.engine.articles[idx] for idx in order]
+            cand_articles = [self.engine.articles[idx] for idx in order]
 
-        # Construire tenues
+            # — 2.b) locks natifs: si un article est verrouillé pour ce slot, on le met en tête et on déduplique
+            if locks and locks.get(slot):
+                locked = locks[slot]
+                # normaliser en Article si besoin (id -> Article)
+                if not hasattr(locked, "id") and hasattr(self, "get_article"):
+                    try:
+                        locked = self.get_article(locked)
+                    except Exception:
+                        locked = None
+                if locked:
+                    lid = getattr(locked, "id", None)
+                    cand_articles = [locked] + [a for a in cand_articles if getattr(a, "id", None) != lid]
+
+            slot_to_cands[slot] = cand_articles[:topk_per_slot]
+
+        # — 3) build
         builder = OutfitBuilder(self.advanced_scorer, rules or {
             "limit_outer": True,
             "avoid_print_clash": True,
             "penalize_running_gala": False,
         })
         outfits = builder.generate(slot_to_cands, beam_size=beam_size, max_outfits=max_outfits)
-        # Filtre qualité final + auto-relax
 
+        # — 4) filtres qualité + auto-relax
         def pass_with(outf, ms, mc, mo):
             adv = self.advanced_scorer.calculate_advanced_score(outf.items, outf.similarities)
             return (adv.seasonal_coherence >= ms and adv.color_harmony >= mc and adv.overall_score >= mo), adv
@@ -738,19 +803,34 @@ class OutfitRecommender:
 
         filtered: List[Outfit] = []
         for o in outfits:
-            kept = False
             for ms, mc, mo in relax_steps:
                 ok, adv = pass_with(o, ms, mc, mo)
                 if ok:
                     o.coherence_score = float(adv.overall_score)
-                    o.advanced_score = adv  # type: ignore[attr-defined]
+                    o.advanced_score = adv  # hint UI
                     if (ms,mc,mo) != (ms0,mc0,mo0):
-                        o.relaxed_thresholds = (ms,mc,mo)  # UI hint
+                        o.relaxed_thresholds = (ms,mc,mo)
                     filtered.append(o)
-                    kept = True
                     break
-            # sinon on ne garde pas
+
+        # — 5) rerank par préférences (avec le bon poids)
+        if preferences and filtered:
+            filtered = apply_preference_rerank(filtered, preferences, w_pref=pref_weight)
+        else:
+            filtered = sorted(filtered, key=lambda x: getattr(x, "coherence_score", 0.0), reverse=True)
+
         return filtered
+
+
+    
+    def top_candidates_by_slot(self, slot: str, query: str, k: int) -> List[Article]:
+        emb_gen = EmbeddingGenerator()
+        q_embs = emb_gen.generate_embeddings([query])
+        if not q_embs or q_embs[0] is None:
+            return []
+        
+        pool = self.engine.ann_search(q_embs[0], slot, topk=k)
+        return [self.engine.articles[idx] for _, idx, _ in pool]
 
 
 
@@ -772,6 +852,9 @@ class FashionRecommendationSystem:
     def initialize(self, max_articles: int = 2000):
         print("Chargement des données...")
         self.articles = self.data_loader.extract_articles(max_articles)
+        self.advanced_scorer = AdvancedOutfitScorer()
+        self.color_analyzer = ColorAnalyzer()
+        self.season_classifier = SeasonalClassifier()
         print(f"Articles extraits: {len(self.articles)}")
 
         print("Traitement des images (crops en cache si existants)...")
@@ -789,12 +872,6 @@ class FashionRecommendationSystem:
         embeddings = self.embedding_generator.generate_embeddings(
             [getattr(a, "crop_path", a.image_path) for a in self.articles]
         )
-
-        # Ajoutez ces lignes de debug :
-        print(f"DEBUG: embeddings générés = {len(embeddings)}")
-        print(f"DEBUG: embeddings non-null = {sum(1 for e in embeddings if e is not None)}")
-        if embeddings:
-            print(f"DEBUG: premier embedding type = {type(embeddings[0])}")
 
         final_articles: List[Article] = []
         for article, emb in zip(self.articles, embeddings):
@@ -816,28 +893,196 @@ class FashionRecommendationSystem:
         self.similarity_engine.rebuild(ann_backend=ann_backend)
         self.ann_backend = ann_backend
 
-    def get_recommendation(self, query_image_path: str,
-                           target_groups: List[str] = None,
-                           similarity_threshold: float = 0.3,
-                           use_advanced_scoring: bool = True) -> Optional[Outfit]:
+    def get_recommendation(self,
+    query_image_path: str,
+    target_groups: Optional[List[str]] = None,
+    similarity_threshold: float = 0.3,
+    use_advanced_scoring: bool = True,
+    preferences: Optional[UserPreferences] = None,
+    pref_weight: float = 0.35
+) -> Optional[Outfit]:
         if not self.recommender:
             raise RuntimeError("Système non initialisé. Appelez initialize() d'abord.")
         return self.recommender.recommend_outfit(
-            query_image_path, target_groups, similarity_threshold, use_advanced_scoring
+            query_image_path,
+            target_groups,
+            similarity_threshold,
+            use_advanced_scoring,
+            preferences,
+            pref_weight=pref_weight
         )
 
-    # Nouveau : multiple tenues via builder
-    def get_recommendations_builder(self, query_image_path: str,
-                                    slots: List[str],
-                                    topk_per_slot: int = 10,
-                                    beam_size: int = 10,
-                                    max_outfits: int = 3,
-                                    rules: Optional[Dict] = None) -> List[Outfit]:
+
+
+    def get_recommendations_builder(self,
+    query_image_path: str,
+    slots: List[str],
+    topk_per_slot: int = 10,
+    beam_size: int = 10,
+    max_outfits: int = 3,
+    rules: Dict | None = None,
+    locks: Dict | None = None,
+    preferences: Optional[UserPreferences] = None,
+    pref_weight: float = 0.35
+):
         if not self.recommender:
             raise RuntimeError("Système non initialisé. Appelez initialize() d'abord.")
-        return self.recommender.recommend_outfits_builder(
-            query_image_path, slots, topk_per_slot, beam_size, max_outfits, rules
-        )
+        try:
+            return self.recommender.recommend_outfits_builder(
+                query_image_path, slots, topk_per_slot, beam_size, max_outfits,
+                rules, locks=locks, preferences=preferences, pref_weight=pref_weight
+            )
+        except TypeError:
+            pass
+
+
+
+    def get_outfit_analysis(self, outfit) -> dict:
+        """
+        Analyse une tenue en s'appuyant sur advanced_outfit_analysis:
+        - ColorAnalyzer / SeasonalClassifier pour signaux par item
+        - AdvancedOutfitScorer pour agrégats (cohérence saison, harmonie couleurs, etc.)
+        - Similarité intra-tenue pour la redondance
+        """
+        assert hasattr(self, "advanced_scorer") and self.advanced_scorer is not None, "AdvancedOutfitScorer non initialisé"
+        assert hasattr(self, "color_analyzer") and self.color_analyzer is not None, "ColorAnalyzer non initialisé"
+        assert hasattr(self, "season_classifier") and self.season_classifier is not None, "SeasonalClassifier non initialisé"
+
+        items = list(getattr(outfit, "items", []))
+
+        # ---- helpers chemin image (prend crop_path sinon image_path, sinon CROP_DIR/id.jpg)
+        def _image_path_for_item(it) -> str | None:
+            p = getattr(it, "crop_path", None) or getattr(it, "image_path", None)
+            if p and os.path.exists(p):
+                return p
+            # fallback sur CROP_DIR/<id>.jpg si dispo dans ton projet
+            try:
+                crop_dir = getattr(self, "crop_dir", None)
+                if crop_dir and getattr(it, "id", None):
+                    cand = str(Path(crop_dir) / f"{it.id}.jpg")
+                    if os.path.exists(cand):
+                        return cand
+            except Exception:
+                pass
+            return None
+
+        # ---- Similarités vs requête (si outfit.similarities pas fourni, on met 0.0 par item)
+        similarities = list(getattr(outfit, "similarities", []))
+        if not similarities or len(similarities) != len(items):
+            similarities = [float(getattr(getattr(it, "scores", {}), "get", lambda *_: 0.0)("cosine")) if isinstance(getattr(it, "scores", {}), dict) else float(getattr(it, "scores", {}).get("cosine", 0.0)) for it in items]
+            # si scores pas présents → 0.0
+            similarities = [s if isinstance(s, (int, float)) else 0.0 for s in similarities]
+            if len(similarities) != len(items):
+                similarities = [0.0] * len(items)
+
+        # ---- Analyses couleurs + profils saisonniers par item (avec tes classes)
+        color_analyses = []
+        seasonal_profiles = []
+        for it in items:
+            img_path = _image_path_for_item(it)
+            # ColorAnalyzer a besoin d'une image lisible; si manquante on met des valeurs neutres
+            if img_path and os.path.exists(img_path):
+                try:
+                    ca = self.color_analyzer.analyze_colors(img_path)
+                except Exception:
+                    # neutre si erreur lecture
+                    ca = None
+            else:
+                ca = None
+
+            if ca is None:
+                # neutre : harmonie moyenne, température neutre, saturation balanced
+                ca = type("CAProxy", (), {})()
+                ca.dominant_colors = []
+                ca.color_harmony_score = 0.5
+                ca.color_temperature = "neutral"
+                ca.saturation_level = "balanced"
+
+            color_analyses.append(ca)
+
+            # Seasonal profile à partir de la catégorie + attributs + analyse couleurs
+            cat = getattr(it, "category_name", "") or ""
+            attrs = [str(a) for a in getattr(it, "attributes", [])] if getattr(it, "attributes", None) is not None else []
+            sp = self.season_classifier.classify_season(cat, attrs, ca)
+            seasonal_profiles.append(sp)
+
+        # ---- Score agrégé avancé (ta classe)
+        adv = self.advanced_scorer.calculate_advanced_score(items, similarities)
+
+        # ---- Saison majoritaire (label + confiance) à partir des profils
+        #     (ton AdvancedOutfitScorer retourne seasonal_coherence mais pas le label dominant)
+        votes = {}
+        for sp in seasonal_profiles:
+            for season, sc in sp.season_scores.items():
+                votes[season] = votes.get(season, 0.0) + sc * sp.confidence
+        if votes:
+            season_label = max(votes, key=votes.get)
+            # normalise une "confiance" simple
+            total = sum(votes.values())
+            season_conf = float(votes[season_label] / total) if total > 0 else float(adv.seasonal_coherence)
+        else:
+            season_label = "unknown"
+            season_conf = float(adv.seasonal_coherence)
+
+        # ---- Harmonie couleurs "OK ?" à partir de ton agrégat
+        color_ok = bool(adv.color_harmony >= 0.5)
+        color_pairs = []  # ton ColorAnalyzer ne retourne pas les paires; on laisse vide (UI sait gérer)
+
+        # ---- Redondance intra-tenue = moyenne des cosines entre embeddings d’items
+        #     (si tu as item.embedding, on l’utilise; sinon redondance=0)
+        embs = []
+        for it in items:
+            v = getattr(it, "embedding", None)
+            if v is not None:
+                v = np.asarray(v)
+                if np.isfinite(v).all() and v.size > 0:
+                    n = np.linalg.norm(v)
+                    if n > 1e-8:
+                        embs.append(v / n)
+        redundancy = 0.0
+        if len(embs) >= 2:
+            sims = []
+            for i in range(len(embs)):
+                for j in range(i + 1, len(embs)):
+                    sims.append(float(np.dot(embs[i], embs[j])))
+            redundancy = float(np.mean(sims)) if sims else 0.0
+
+        # ---- Scores par item (lis directement it.scores si présent)
+        item_scores = []
+        for it in items:
+            s = getattr(it, "scores", {}) or {}
+            item_scores.append({
+                "item_id": getattr(it, "id", None),
+                "slot": getattr(it, "group", None),
+                "name": getattr(it, "category_name", None),
+                "cosine": float(s.get("cosine", 0.0)) if isinstance(s, dict) else 0.0,
+                "color_score": float(s.get("color", 0.0)) if isinstance(s, dict) else 0.0,
+                "season_score": float(s.get("season", 0.0)) if isinstance(s, dict) else 0.0,
+            })
+
+        # ---- Texte brut (si tu veux conserver l’existant)
+        raw_text = None
+        if hasattr(self, "get_outfit_explanation"):
+            try:
+                raw_text = self.get_outfit_explanation(outfit)
+            except Exception:
+                raw_text = None
+
+        return {
+            "color_harmony": {"ok": color_ok, "pairs": color_pairs},
+            "season": {"label": season_label, "confidence": season_conf},
+            "redundancy": redundancy,
+            "item_scores": item_scores,
+            "advanced": {
+                "overall": float(adv.overall_score),
+                "visual_similarity": float(adv.visual_similarity),
+                "seasonal_coherence": float(adv.seasonal_coherence),
+                "color_harmony": float(adv.color_harmony),
+                "style_consistency": float(adv.style_consistency),
+            },
+            "raw_text": raw_text,
+        }
+
 
     # Explication textuelle
     def get_outfit_explanation(self, outfit: Outfit) -> str:
