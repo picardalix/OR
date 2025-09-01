@@ -1,0 +1,12 @@
+{
+  "reference": "full_ext",
+  "delta_vs_leave_one_out": {
+    "clip": 0.07203324501430974,
+    "color": 0.0026720357871724554,
+    "season": 0.0,
+    "luminance": -0.0013360178935863942,
+    "texture": 0.0,
+    "pattern": 0.0,
+    "text": 0.0
+  }
+}

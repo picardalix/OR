@@ -1,0 +1,61 @@
+{
+  "nodes": [
+    {
+      "id": "dualipa",
+      "group": "macro",
+      "score": 0.5366357217631967
+    },
+    {
+      "id": "Bottega Veneta",
+      "group": "brand",
+      "score": 0.2279981203007518
+    },
+    {
+      "id": "enhypen",
+      "group": "macro",
+      "score": 0.5284541319027916
+    },
+    {
+      "id": "kyliejenner",
+      "group": "macro",
+      "score": 0.6811337111868915
+    },
+    {
+      "id": "cocogauff",
+      "group": "macro",
+      "score": 0.2908333333333333
+    },
+    {
+      "id": "Louis Vuitton",
+      "group": "brand",
+      "score": 0.2272556390977444
+    }
+  ],
+  "links": [
+    {
+      "source": "dualipa",
+      "target": "Bottega Veneta",
+      "value": 0.2414860747934385
+    },
+    {
+      "source": "enhypen",
+      "target": "Louis Vuitton",
+      "value": 0.2906497725465354
+    },
+    {
+      "source": "enhypen",
+      "target": "Bottega Veneta",
+      "value": 0.2906497725465354
+    },
+    {
+      "source": "kyliejenner",
+      "target": "Bottega Veneta",
+      "value": 0.59599199728853
+    },
+    {
+      "source": "cocogauff",
+      "target": "Louis Vuitton",
+      "value": 0.08725
+    }
+  ]
+}

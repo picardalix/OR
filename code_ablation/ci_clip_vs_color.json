@@ -1,0 +1,46 @@
+{
+  "data": "eval_manual_from_alix.csv",
+  "variant_a": "clip_only",
+  "variant_b": "+color",
+  "k": 10,
+  "n_boot": 5000,
+  "seed": 123,
+  "results": {
+    "map@k": {
+      "mean_A": 0.9064625850340136,
+      "mean_B": 0.9132653061224489,
+      "delta_B_minus_A": 0.006802721088435375,
+      "ci95_low": -0.01020408163265306,
+      "ci95_high": 0.025510204081632654,
+      "p_boot": 0.2524,
+      "n_queries": 98
+    },
+    "ndcg@k": {
+      "mean_A": 0.9299394752883164,
+      "mean_B": 0.9350415161046429,
+      "delta_B_minus_A": 0.00510204081632653,
+      "ci95_low": -0.0075320458454804584,
+      "ci95_high": 0.018830114613701147,
+      "p_boot": 0.2518,
+      "n_queries": 98
+    },
+    "precision@k": {
+      "mean_A": 0.16921768707482995,
+      "mean_B": 0.16921768707482995,
+      "delta_B_minus_A": 0.0,
+      "ci95_low": 0.0,
+      "ci95_high": 0.0,
+      "p_boot": 1.0,
+      "n_queries": 98
+    },
+    "recall@k": {
+      "mean_A": 1.0,
+      "mean_B": 1.0,
+      "delta_B_minus_A": 0.0,
+      "ci95_low": 0.0,
+      "ci95_high": 0.0,
+      "p_boot": 1.0,
+      "n_queries": 98
+    }
+  }
+}
