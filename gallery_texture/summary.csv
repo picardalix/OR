@@ -1,0 +1,11 @@
+query_id,metric,A,B,delta,png_path
+q_haut56->chaussure,map@k,0.333333,0.333333,0.000000,gallery_texture/gallery_q_haut56->chaussure.png
+q_haut56->sac,map@k,0.166667,0.166667,0.000000,gallery_texture/gallery_q_haut56->sac.png
+q_sac58->pantalon,map@k,0.333333,0.333333,0.000000,gallery_texture/gallery_q_sac58->pantalon.png
+q_bas26682->haut,map@k,0.500000,1.000000,0.500000,gallery_texture/gallery_q_bas26682->haut.png
+q_haut4062->bas,map@k,0.500000,1.000000,0.500000,gallery_texture/gallery_q_haut4062->bas.png
+q_bas90042->haut,map@k,1.000000,1.000000,0.000000,gallery_texture/gallery_q_bas90042->haut.png
+q_bas90052->haut,map@k,1.000000,1.000000,0.000000,gallery_texture/gallery_q_bas90052->haut.png
+q_bas90062->haut,map@k,1.000000,1.000000,0.000000,gallery_texture/gallery_q_bas90062->haut.png
+q_bas90072->haut,map@k,1.000000,1.000000,0.000000,gallery_texture/gallery_q_bas90072->haut.png
+q_bas90082->haut,map@k,1.000000,1.000000,0.000000,gallery_texture/gallery_q_bas90082->haut.png
