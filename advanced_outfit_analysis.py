@@ -2,11 +2,12 @@ import numpy as np
 import cv2
 from PIL import Image
 from sklearn.cluster import KMeans
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional,Sequence
 from dataclasses import dataclass
 from collections import defaultdict
 import colorsys
 import os
+
 
 @dataclass
 class ColorAnalysis:
@@ -346,3 +347,22 @@ class OutfitFilter:
                 filtered_outfits.append(outfit)
         
         return sorted(filtered_outfits, key=lambda x: x.coherence_score, reverse=True)
+    
+
+
+def cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
+    na = np.linalg.norm(a)
+    nb = np.linalg.norm(b)
+    if na == 0 or nb == 0:
+        return 0.0
+    return float(np.dot(a, b) / (na * nb))
+
+def topk_similar(query_vec: np.ndarray, gallery: Sequence[np.ndarray], k: int = 5):
+    sims = []
+    for i, v in enumerate(gallery):
+        if v is None:
+            sims.append((-1.0, i))
+        else:
+            sims.append((cosine_sim(query_vec, v), i))
+    sims.sort(reverse=True, key=lambda x: x[0])
+    return sims[:k]
