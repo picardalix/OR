@@ -1,0 +1,5 @@
+noeud,type,eigenvector_centrality,betweenness_centrality,degree_centrality
+kyliejenner,macro,0.5759333215854504,0.0,0.2
+enhypen,macro,0.3369877566511909,0.6000000000000001,0.4
+dualipa,macro,0.2333586320037224,0.0,0.2
+cocogauff,macro,0.016846656169664177,0.0,0.2

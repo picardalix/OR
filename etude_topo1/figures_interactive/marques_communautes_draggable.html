@@ -1,0 +1,127 @@
+<html>
+    <head>
+        <meta charset="utf-8">
+        
+            <script src="lib/bindings/utils.js"></script>
+            <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.2/dist/dist/vis-network.min.css" integrity="sha512-WgxfT5LWjfszlPHXRmBWHkV2eceiWTOBvrKCNbdgDYTHrT2AeLCGbF4sZlZw3UMN3WtL0tGUoIAKsu8mllg/XA==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.2/dist/vis-network.min.js" integrity="sha512-LnvoEWDFrqGHlHmDD2101OrLcbsfkrzoSpvtSQtxK3RMnRV0eOkhhBN2dXHKRrUU8p2DGRTk35n4O8nWSVe1mQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+            
+        
+<center>
+<h1></h1>
+</center>
+
+<!-- <link rel="stylesheet" href="../node_modules/vis/dist/vis.min.css" type="text/css" />
+<script type="text/javascript" src="../node_modules/vis/dist/vis.js"> </script>-->
+        <link
+          href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/css/bootstrap.min.css"
+          rel="stylesheet"
+          integrity="sha384-eOJMYsd53ii+scO/bJGFsiCZc+5NDVN2yr8+0RDqr0Ql0h+rP48ckxlpbzKgwra6"
+          crossorigin="anonymous"
+        />
+        <script
+          src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/js/bootstrap.bundle.min.js"
+          integrity="sha384-JEW9xMcG8R+pH31jmWH6WWP0WintQrMb4s7ZOdauHnUtxwoG2vI5DkLtS3qm9Ekf"
+          crossorigin="anonymous"
+        ></script>
+
+
+        <center>
+          <h1></h1>
+        </center>
+        <style type="text/css">
+
+             #mynetwork {
+                 width: 100%;
+                 height: 800px;
+                 background-color: #ffffff;
+                 border: 1px solid lightgray;
+                 position: relative;
+                 float: left;
+             }
+
+             
+
+             
+
+             
+        </style>
+    </head>
+
+
+    <body>
+        <div class="card" style="width: 100%">
+            
+            
+            <div id="mynetwork" class="card-body"></div>
+        </div>
+
+        
+        
+
+        <script type="text/javascript">
+
+              // initialize global variables.
+              var edges;
+              var nodes;
+              var allNodes;
+              var allEdges;
+              var nodeColors;
+              var originalNodes;
+              var network;
+              var container;
+              var options, data;
+              var filter = {
+                  item : '',
+                  property : '',
+                  value : []
+              };
+
+              
+
+              
+
+              // This method is responsible for drawing the graph, returns the drawn network
+              function drawGraph() {
+                  var container = document.getElementById('mynetwork');
+
+                  
+
+                  // parsing and collecting nodes and edges from the python
+                  nodes = new vis.DataSet([{"color": "#2ca02c", "font": {"color": "#222222"}, "id": "COS", "label": "COS", "shape": "dot", "size": 22, "title": "\u003cb\u003eCOS\u003c/b\u003e\u003cbr\u003ecom=2\u003cbr\u003edeg=0.050 | betw=0.000 | eig=0.019"}, {"color": "#ff7f0e", "font": {"color": "#222222"}, "id": "Ganni", "label": "Ganni", "shape": "dot", "size": 34, "title": "\u003cb\u003eGanni\u003c/b\u003e\u003cbr\u003ecom=1\u003cbr\u003edeg=0.100 | betw=0.019 | eig=0.445"}, {"color": "#2ca02c", "font": {"color": "#222222"}, "id": "Uniqlo", "label": "Uniqlo", "shape": "dot", "size": 22, "title": "\u003cb\u003eUniqlo\u003c/b\u003e\u003cbr\u003ecom=2\u003cbr\u003edeg=0.050 | betw=0.000 | eig=0.019"}, {"color": "#ff7f0e", "font": {"color": "#222222"}, "id": "Acne Studios", "label": "Acne Studios", "shape": "dot", "size": 34, "title": "\u003cb\u003eAcne Studios\u003c/b\u003e\u003cbr\u003ecom=1\u003cbr\u003edeg=0.100 | betw=0.094 | eig=0.136"}, {"color": "#2ca02c", "font": {"color": "#222222"}, "id": "Comme des Gar\u00e7ons", "label": "Comme des Gar\u00e7ons", "shape": "dot", "size": 22, "title": "\u003cb\u003eComme des Gar\u00e7ons\u003c/b\u003e\u003cbr\u003ecom=2\u003cbr\u003edeg=0.050 | betw=0.000 | eig=0.032"}, {"color": "#ff7f0e", "font": {"color": "#222222"}, "id": "Staud", "label": "Staud", "shape": "dot", "size": 28, "title": "\u003cb\u003eStaud\u003c/b\u003e\u003cbr\u003ecom=1\u003cbr\u003edeg=0.075 | betw=0.083 | eig=0.337"}, {"color": "#2ca02c", "font": {"color": "#222222"}, "id": "Stone Island", "label": "Stone Island", "shape": "dot", "size": 34, "title": "\u003cb\u003eStone Island\u003c/b\u003e\u003cbr\u003ecom=2\u003cbr\u003edeg=0.100 | betw=0.051 | eig=0.041"}, {"color": "#ff7f0e", "font": {"color": "#222222"}, "id": "Jacquemus", "label": "Jacquemus", "shape": "dot", "size": 52, "title": "\u003cb\u003eJacquemus\u003c/b\u003e\u003cbr\u003ecom=1\u003cbr\u003edeg=0.175 | betw=0.163 | eig=0.554"}, {"color": "#1f77b4", "font": {"color": "#222222"}, "id": "Armani", "label": "Armani", "shape": "dot", "size": 22, "title": "\u003cb\u003eArmani\u003c/b\u003e\u003cbr\u003ecom=0\u003cbr\u003edeg=0.050 | betw=0.000 | eig=0.019"}, {"color": "#1f77b4", "font": {"color": "#222222"}, "id": "Valentino", "label": "Valentino", "shape": "dot", "size": 22, "title": "\u003cb\u003eValentino\u003c/b\u003e\u003cbr\u003ecom=0\u003cbr\u003edeg=0.050 | betw=0.000 | eig=0.019"}, {"color": "#1f77b4", "font": {"color": "#222222"}, "id": "Versace", "label": "Versace", "shape": "dot", "size": 34, "title": "\u003cb\u003eVersace\u003c/b\u003e\u003cbr\u003ecom=0\u003cbr\u003edeg=0.100 | betw=0.051 | eig=0.111"}, {"color": "#9467bd", "font": {"color": "#222222"}, "id": "Augustinus Bader", "label": "Augustinus Bader", "shape": "dot", "size": 22, "title": "\u003cb\u003eAugustinus Bader\u003c/b\u003e\u003cbr\u003ecom=4\u003cbr\u003edeg=0.050 | betw=0.000 | eig=0.000"}, {"color": "#9467bd", "font": {"color": "#222222"}, "id": "Charlotte Tilbury", "label": "Charlotte Tilbury", "shape": "dot", "size": 22, "title": "\u003cb\u003eCharlotte Tilbury\u003c/b\u003e\u003cbr\u003ecom=4\u003cbr\u003edeg=0.050 | betw=0.000 | eig=0.000"}, {"color": "#9467bd", "font": {"color": "#222222"}, "id": "La Mer", "label": "La Mer", "shape": "dot", "size": 22, "title": "\u003cb\u003eLa Mer\u003c/b\u003e\u003cbr\u003ecom=4\u003cbr\u003edeg=0.050 | betw=0.000 | eig=0.000"}, {"color": "#8c564b", "font": {"color": "#222222"}, "id": "Ba\u0026sh", "label": "Ba\u0026sh", "shape": "dot", "size": 22, "title": "\u003cb\u003eBa\u0026sh\u003c/b\u003e\u003cbr\u003ecom=5\u003cbr\u003edeg=0.050 | betw=0.000 | eig=-0.000"}, {"color": "#8c564b", "font": {"color": "#222222"}, "id": "Maje", "label": "Maje", "shape": "dot", "size": 22, "title": "\u003cb\u003eMaje\u003c/b\u003e\u003cbr\u003ecom=5\u003cbr\u003edeg=0.050 | betw=0.000 | eig=-0.000"}, {"color": "#8c564b", "font": {"color": "#222222"}, "id": "Sandro", "label": "Sandro", "shape": "dot", "size": 22, "title": "\u003cb\u003eSandro\u003c/b\u003e\u003cbr\u003ecom=5\u003cbr\u003edeg=0.050 | betw=0.000 | eig=-0.000"}, {"color": "#e377c2", "font": {"color": "#222222"}, "id": "Berluti", "label": "Berluti", "shape": "dot", "size": 22, "title": "\u003cb\u003eBerluti\u003c/b\u003e\u003cbr\u003ecom=6\u003cbr\u003edeg=0.050 | betw=0.000 | eig=0.000"}, {"color": "#e377c2", "font": {"color": "#222222"}, "id": "Brioni", "label": "Brioni", "shape": "dot", "size": 22, "title": "\u003cb\u003eBrioni\u003c/b\u003e\u003cbr\u003ecom=6\u003cbr\u003edeg=0.050 | betw=0.000 | eig=0.000"}, {"color": "#e377c2", "font": {"color": "#222222"}, "id": "Tom Ford", "label": "Tom Ford", "shape": "dot", "size": 22, "title": "\u003cb\u003eTom Ford\u003c/b\u003e\u003cbr\u003ecom=6\u003cbr\u003edeg=0.050 | betw=0.000 | eig=0.000"}, {"color": "#1f77b4", "font": {"color": "#222222"}, "id": "Bottega Veneta", "label": "Bottega Veneta", "shape": "dot", "size": 46, "title": "\u003cb\u003eBottega Veneta\u003c/b\u003e\u003cbr\u003ecom=0\u003cbr\u003edeg=0.150 | betw=0.072 | eig=0.306"}, {"color": "#1f77b4", "font": {"color": "#222222"}, "id": "Dior Men", "label": "Dior Men", "shape": "dot", "size": 22, "title": "\u003cb\u003eDior Men\u003c/b\u003e\u003cbr\u003ecom=0\u003cbr\u003edeg=0.050 | betw=0.000 | eig=0.073"}, {"color": "#1f77b4", "font": {"color": "#222222"}, "id": "Louis Vuitton", "label": "Louis Vuitton", "shape": "dot", "size": 22, "title": "\u003cb\u003eLouis Vuitton\u003c/b\u003e\u003cbr\u003ecom=0\u003cbr\u003edeg=0.050 | betw=0.000 | eig=0.073"}, {"color": "#1f77b4", "font": {"color": "#222222"}, "id": "Mugler", "label": "Mugler", "shape": "dot", "size": 34, "title": "\u003cb\u003eMugler\u003c/b\u003e\u003cbr\u003ecom=0\u003cbr\u003edeg=0.100 | betw=0.050 | eig=0.230"}, {"color": "#d62728", "font": {"color": "#222222"}, "id": "The Row", "label": "The Row", "shape": "dot", "size": 40, "title": "\u003cb\u003eThe Row\u003c/b\u003e\u003cbr\u003ecom=3\u003cbr\u003edeg=0.125 | betw=0.073 | eig=0.295"}, {"color": "#7f7f7f", "font": {"color": "#222222"}, "id": "Brandy Melville", "label": "Brandy Melville", "shape": "dot", "size": 22, "title": "\u003cb\u003eBrandy Melville\u003c/b\u003e\u003cbr\u003ecom=7\u003cbr\u003edeg=0.050 | betw=0.000 | eig=-0.000"}, {"color": "#7f7f7f", "font": {"color": "#222222"}, "id": "Revolve", "label": "Revolve", "shape": "dot", "size": 22, "title": "\u003cb\u003eRevolve\u003c/b\u003e\u003cbr\u003ecom=7\u003cbr\u003edeg=0.050 | betw=0.000 | eig=-0.000"}, {"color": "#7f7f7f", "font": {"color": "#222222"}, "id": "Urban Outfitters", "label": "Urban Outfitters", "shape": "dot", "size": 22, "title": "\u003cb\u003eUrban Outfitters\u003c/b\u003e\u003cbr\u003ecom=7\u003cbr\u003edeg=0.050 | betw=0.000 | eig=-0.000"}, {"color": "#bcbd22", "font": {"color": "#222222"}, "id": "Cartier", "label": "Cartier", "shape": "dot", "size": 22, "title": "\u003cb\u003eCartier\u003c/b\u003e\u003cbr\u003ecom=8\u003cbr\u003edeg=0.050 | betw=0.000 | eig=-0.000"}, {"color": "#bcbd22", "font": {"color": "#222222"}, "id": "Celine", "label": "Celine", "shape": "dot", "size": 22, "title": "\u003cb\u003eCeline\u003c/b\u003e\u003cbr\u003ecom=8\u003cbr\u003edeg=0.050 | betw=0.000 | eig=-0.000"}, {"color": "#bcbd22", "font": {"color": "#222222"}, "id": "Tiffany \u0026 Co", "label": "Tiffany \u0026 Co", "shape": "dot", "size": 22, "title": "\u003cb\u003eTiffany \u0026 Co\u003c/b\u003e\u003cbr\u003ecom=8\u003cbr\u003edeg=0.050 | betw=0.000 | eig=-0.000"}, {"color": "#17becf", "font": {"color": "#222222"}, "id": "Chrome Hearts", "label": "Chrome Hearts", "shape": "dot", "size": 22, "title": "\u003cb\u003eChrome Hearts\u003c/b\u003e\u003cbr\u003ecom=9\u003cbr\u003edeg=0.050 | betw=0.000 | eig=0.000"}, {"color": "#17becf", "font": {"color": "#222222"}, "id": "Fear of God", "label": "Fear of God", "shape": "dot", "size": 22, "title": "\u003cb\u003eFear of God\u003c/b\u003e\u003cbr\u003ecom=9\u003cbr\u003edeg=0.050 | betw=0.000 | eig=0.000"}, {"color": "#17becf", "font": {"color": "#222222"}, "id": "Gallery Dept", "label": "Gallery Dept", "shape": "dot", "size": 22, "title": "\u003cb\u003eGallery Dept\u003c/b\u003e\u003cbr\u003ecom=9\u003cbr\u003edeg=0.050 | betw=0.000 | eig=0.000"}, {"color": "#1f77b4", "font": {"color": "#222222"}, "id": "Coperni", "label": "Coperni", "shape": "dot", "size": 22, "title": "\u003cb\u003eCoperni\u003c/b\u003e\u003cbr\u003ecom=0\u003cbr\u003edeg=0.050 | betw=0.000 | eig=0.163"}, {"color": "#ff7f0e", "font": {"color": "#222222"}, "id": "The Frankie Shop", "label": "The Frankie Shop", "shape": "dot", "size": 34, "title": "\u003cb\u003eThe Frankie Shop\u003c/b\u003e\u003cbr\u003ecom=1\u003cbr\u003edeg=0.100 | betw=0.068 | eig=0.208"}, {"color": "#d62728", "font": {"color": "#222222"}, "id": "Khaite", "label": "Khaite", "shape": "dot", "size": 22, "title": "\u003cb\u003eKhaite\u003c/b\u003e\u003cbr\u003ecom=3\u003cbr\u003edeg=0.050 | betw=0.000 | eig=0.088"}, {"color": "#d62728", "font": {"color": "#222222"}, "id": "Lemaire", "label": "Lemaire", "shape": "dot", "size": 28, "title": "\u003cb\u003eLemaire\u003c/b\u003e\u003cbr\u003ecom=3\u003cbr\u003edeg=0.075 | betw=0.001 | eig=0.116"}, {"color": "#d62728", "font": {"color": "#222222"}, "id": "Tot\u00eame", "label": "Tot\u00eame", "shape": "dot", "size": 22, "title": "\u003cb\u003eTot\u00eame\u003c/b\u003e\u003cbr\u003ecom=3\u003cbr\u003edeg=0.050 | betw=0.000 | eig=0.095"}, {"color": "#ff7f0e", "font": {"color": "#222222"}, "id": "Rouje", "label": "Rouje", "shape": "dot", "size": 22, "title": "\u003cb\u003eRouje\u003c/b\u003e\u003cbr\u003ecom=1\u003cbr\u003edeg=0.050 | betw=0.000 | eig=0.033"}, {"color": "#ff7f0e", "font": {"color": "#222222"}, "id": "Sezane", "label": "Sezane", "shape": "dot", "size": 22, "title": "\u003cb\u003eSezane\u003c/b\u003e\u003cbr\u003ecom=1\u003cbr\u003edeg=0.050 | betw=0.000 | eig=0.033"}]);
+                  edges = new vis.DataSet([{"from": "COS", "title": "weight=0.754", "to": "Stone Island", "value": 0.7543621688165232, "width": 3.0174486752660927}, {"from": "COS", "title": "weight=1.094", "to": "Uniqlo", "value": 1.094315435834535, "width": 4.37726174333814}, {"from": "Ganni", "title": "weight=0.429", "to": "Acne Studios", "value": 0.4294241776855234, "width": 1.7176967107420935}, {"from": "Ganni", "title": "weight=1.220", "to": "Jacquemus", "value": 1.21999250133664, "width": 4.87997000534656}, {"from": "Ganni", "title": "weight=1.105", "to": "Staud", "value": 1.104755534139361, "width": 4.419022136557444}, {"from": "Ganni", "title": "weight=0.545", "to": "The Frankie Shop", "value": 0.5446611448828025, "width": 2.17864457953121}, {"from": "Uniqlo", "title": "weight=0.754", "to": "Stone Island", "value": 0.7543621688165232, "width": 3.0174486752660927}, {"from": "Acne Studios", "title": "weight=0.498", "to": "Comme des Gar\u00e7ons", "value": 0.4975192633428134, "width": 1.9900770533712535}, {"from": "Acne Studios", "title": "weight=0.429", "to": "Staud", "value": 0.4294241776855234, "width": 1.7176967107420935}, {"from": "Acne Studios", "title": "weight=0.498", "to": "Stone Island", "value": 0.4975192633428134, "width": 1.9900770533712535}, {"from": "Comme des Gar\u00e7ons", "title": "weight=0.498", "to": "Stone Island", "value": 0.4975192633428134, "width": 1.9900770533712535}, {"from": "Staud", "title": "weight=0.675", "to": "Jacquemus", "value": 0.6753313564538377, "width": 2.7013254258153507}, {"from": "Jacquemus", "title": "weight=0.681", "to": "Bottega Veneta", "value": 0.6811337111868915, "width": 2.724534844747566}, {"from": "Jacquemus", "title": "weight=0.568", "to": "Coperni", "value": 0.5684913646309301, "width": 2.2739654585237203}, {"from": "Jacquemus", "title": "weight=0.568", "to": "Mugler", "value": 0.5684913646309301, "width": 2.2739654585237203}, {"from": "Jacquemus", "title": "weight=0.545", "to": "The Frankie Shop", "value": 0.5446611448828025, "width": 2.17864457953121}, {"from": "Jacquemus", "title": "weight=0.681", "to": "The Row", "value": 0.6811337111868915, "width": 2.724534844747566}, {"from": "Armani", "title": "weight=0.400", "to": "Valentino", "value": 0.4002657510120275, "width": 1.60106300404811}, {"from": "Armani", "title": "weight=0.400", "to": "Versace", "value": 0.4002657510120275, "width": 1.60106300404811}, {"from": "Valentino", "title": "weight=0.400", "to": "Versace", "value": 0.4002657510120275, "width": 1.60106300404811}, {"from": "Versace", "title": "weight=0.537", "to": "Bottega Veneta", "value": 0.5366357217631967, "width": 2.146542887052787}, {"from": "Versace", "title": "weight=0.537", "to": "Mugler", "value": 0.5366357217631967, "width": 2.146542887052787}, {"from": "Augustinus Bader", "title": "weight=0.354", "to": "Charlotte Tilbury", "value": 0.3536342346106671, "width": 1.4145369384426685}, {"from": "Augustinus Bader", "title": "weight=0.354", "to": "La Mer", "value": 0.3536342346106671, "width": 1.4145369384426685}, {"from": "Charlotte Tilbury", "title": "weight=0.354", "to": "La Mer", "value": 0.3536342346106671, "width": 1.4145369384426685}, {"from": "Ba\u0026sh", "title": "weight=0.467", "to": "Maje", "value": 0.4668154335880813, "width": 1.8672617343523252}, {"from": "Ba\u0026sh", "title": "weight=0.467", "to": "Sandro", "value": 0.4668154335880813, "width": 1.8672617343523252}, {"from": "Maje", "title": "weight=0.467", "to": "Sandro", "value": 0.4668154335880813, "width": 1.8672617343523252}, {"from": "Berluti", "title": "weight=0.532", "to": "Brioni", "value": 0.5320379718114956, "width": 2.1281518872459824}, {"from": "Berluti", "title": "weight=0.532", "to": "Tom Ford", "value": 0.5320379718114956, "width": 2.1281518872459824}, {"from": "Brioni", "title": "weight=0.532", "to": "Tom Ford", "value": 0.5320379718114956, "width": 2.1281518872459824}, {"from": "Bottega Veneta", "title": "weight=0.528", "to": "Dior Men", "value": 0.5284541319027916, "width": 2.1138165276111662}, {"from": "Bottega Veneta", "title": "weight=0.528", "to": "Louis Vuitton", "value": 0.5284541319027916, "width": 2.1138165276111662}, {"from": "Bottega Veneta", "title": "weight=0.537", "to": "Mugler", "value": 0.5366357217631967, "width": 2.146542887052787}, {"from": "Bottega Veneta", "title": "weight=0.681", "to": "The Row", "value": 0.6811337111868915, "width": 2.724534844747566}, {"from": "Dior Men", "title": "weight=0.528", "to": "Louis Vuitton", "value": 0.5284541319027916, "width": 2.1138165276111662}, {"from": "Mugler", "title": "weight=0.568", "to": "Coperni", "value": 0.5684913646309301, "width": 2.2739654585237203}, {"from": "The Row", "title": "weight=0.670", "to": "Khaite", "value": 0.6696815494242339, "width": 2.6787261976969354}, {"from": "The Row", "title": "weight=0.820", "to": "Lemaire", "value": 0.8196040624873637, "width": 3.278416249949455}, {"from": "The Row", "title": "weight=0.714", "to": "Tot\u00eame", "value": 0.7141433125311696, "width": 2.8565732501246783}, {"from": "Brandy Melville", "title": "weight=0.430", "to": "Revolve", "value": 0.430123494314225, "width": 1.7204939772569}, {"from": "Brandy Melville", "title": "weight=0.430", "to": "Urban Outfitters", "value": 0.430123494314225, "width": 1.7204939772569}, {"from": "Revolve", "title": "weight=0.430", "to": "Urban Outfitters", "value": 0.430123494314225, "width": 1.7204939772569}, {"from": "Cartier", "title": "weight=0.889", "to": "Celine", "value": 0.8888333333333334, "width": 3.5553333333333335}, {"from": "Cartier", "title": "weight=0.889", "to": "Tiffany \u0026 Co", "value": 0.8888333333333334, "width": 3.5553333333333335}, {"from": "Celine", "title": "weight=0.889", "to": "Tiffany \u0026 Co", "value": 0.8888333333333334, "width": 3.5553333333333335}, {"from": "Chrome Hearts", "title": "weight=0.427", "to": "Fear of God", "value": 0.4266764342485387, "width": 1.7067057369941547}, {"from": "Chrome Hearts", "title": "weight=0.427", "to": "Gallery Dept", "value": 0.4266764342485387, "width": 1.7067057369941547}, {"from": "Fear of God", "title": "weight=0.427", "to": "Gallery Dept", "value": 0.4266764342485387, "width": 1.7067057369941547}, {"from": "The Frankie Shop", "title": "weight=0.374", "to": "Rouje", "value": 0.3737389373374129, "width": 1.4949557493496517}, {"from": "The Frankie Shop", "title": "weight=0.374", "to": "Sezane", "value": 0.3737389373374129, "width": 1.4949557493496517}, {"from": "Khaite", "title": "weight=0.388", "to": "Lemaire", "value": 0.387571149690214, "width": 1.550284598760856}, {"from": "Lemaire", "title": "weight=0.432", "to": "Tot\u00eame", "value": 0.4320329127971497, "width": 1.728131651188599}, {"from": "Rouje", "title": "weight=0.374", "to": "Sezane", "value": 0.3737389373374129, "width": 1.4949557493496517}]);
+
+                  nodeColors = {};
+                  allNodes = nodes.get({ returnType: "Object" });
+                  for (nodeId in allNodes) {
+                    nodeColors[nodeId] = allNodes[nodeId].color;
+                  }
+                  allEdges = edges.get({ returnType: "Object" });
+                  // adding nodes and edges to the graph
+                  data = {nodes: nodes, edges: edges};
+
+                  var options = {"interaction": {"hover": true, "dragNodes": true, "dragView": true, "zoomView": true}, "physics": {"enabled": true, "stabilization": {"iterations": 200}}, "edges": {"smooth": {"type": "dynamic"}}};
+
+                  
+
+
+                  
+
+                  network = new vis.Network(container, data, options);
+
+                  
+
+                  
+
+                  
+
+
+                  
+
+                  return network;
+
+              }
+              drawGraph();
+        </script>
+    </body>
+</html>
