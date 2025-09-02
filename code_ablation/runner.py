@@ -10,60 +10,8 @@ from configs import VARIANTS, SHAPLEY_REFERENCE, COMPONENTS
 from hooks import RecommenderWithAblations
 
 # ======================== Métriques (fallback sûrs) ========================
-_FALLBACK = False
-try:
-    from metrics import precision_at_k, recall_at_k, map_at_k, ndcg_at_k, fitb_accuracy  # type: ignore
-    _FALLBACK = any(f is None for f in [precision_at_k, recall_at_k, map_at_k, ndcg_at_k, fitb_accuracy])
-except Exception:
-    _FALLBACK = True
+from metrics import precision_at_k, recall_at_k, map_at_k, ndcg_at_k, fitb_accuracy  # type: ignore
 
-if _FALLBACK:
-    import math
-    def precision_at_k(positives: Sequence[str], ranked: Sequence[str], k: int) -> float:
-        if k <= 0: return 0.0
-        topk = ranked[:k]
-        hits = sum(1 for r in topk if r in set(positives))
-        return hits / float(k)
-
-    def recall_at_k(positives: Sequence[str], ranked: Sequence[str], k: int) -> float:
-        P = len(positives)
-        if P == 0 or k <= 0: return 0.0
-        topk = ranked[:k]
-        hits = sum(1 for r in topk if r in set(positives))
-        return hits / float(P)
-
-    def map_at_k(positives: Sequence[str], ranked: Sequence[str], k: int) -> float:
-        P = len(positives)
-        if P == 0 or k <= 0: return 0.0
-        pos = set(positives)
-        ap_sum, hits = 0.0, 0
-        for i, r in enumerate(ranked[:k], start=1):
-            if r in pos:
-                hits += 1
-                ap_sum += hits / float(i)
-        return ap_sum / float(min(P, k))
-
-    def ndcg_at_k(positives: Sequence[str], ranked: Sequence[str], k: int) -> float:
-        if k <= 0: return 0.0
-        import math
-        pos = set(positives)
-        dcg = 0.0
-        for i, r in enumerate(ranked[:k], start=1):
-            if r in pos:
-                dcg += 1.0 / math.log2(i + 1)
-        p = min(len(pos), k)
-        if p == 0: return 0.0
-        idcg = sum(1.0 / math.log2(i + 1) for i in range(1, p + 1))
-        return dcg / idcg if idcg > 0 else 0.0
-
-    def fitb_accuracy(batches: List[List[float]], correct_indices: List[int]) -> float:
-        if not batches: return 0.0
-        ok = 0
-        for scores, ci in zip(batches, correct_indices):
-            if not scores: continue
-            pred = max(range(len(scores)), key=lambda i: scores[i])
-            ok += int(pred == int(ci))
-        return ok / float(len(batches))
 
 # ======================== Utils canon ========================
 def _canon(s: str) -> str:
@@ -132,9 +80,7 @@ def load_eval_csv(path: Path) -> List[EvalItem]:
                 fitb_options=fitb_opts,
                 fitb_answer_idx=fitb_idx,
             ))
-    total = len(items)
-    with_pos = sum(1 for it in items if len(it.positives) > 0)
-    print(f"[INFO] Chargé {total} items ; {with_pos} avec au moins 1 positif présent dans le pool.")
+
     return items
 
 # ======================== Évaluation ========================
