@@ -11,7 +11,7 @@ from fashion_recommendation_system import EmbeddingGenerator
 
 # Analyse optionnelle si tu as ces classes
 try:
-    from advanced_outfit_analysis import ColorAnalyzer, SeasonalClassifier
+    from advanced_outfit_analysis import ColorAnalyzer, SeasonalClassifier, ColorAnalysis
     HAVE_ANALYSIS = True
 except Exception:
     ColorAnalyzer = None  # type: ignore
@@ -65,94 +65,156 @@ class RecommenderWithAblations:
         if path in self._color_cache:
             return self._color_cache[path]
         try:
-            res = self.color.analyze(path)  # si ton ColorAnalyzer expose analyze(path)
+            res = self.color.analyze_colors(path)  # -> ColorAnalysis
         except Exception:
             res = None
         self._color_cache[path] = res
         return res
 
+    def _color_harmony_pair(self, qa: ColorAnalysis, ca: ColorAnalysis) -> float:
+        # 1) harmonie de la palette combinée
+        comb = (qa.dominant_colors[:3] + ca.dominant_colors[:3])
+        base = float(self.color.calculate_harmony_score(comb))  # ~[0..1]
+
+        # 2) bonus température
+        temp_bonus = 0.15 if qa.color_temperature == ca.color_temperature else 0.0
+
+        # 3) bonus saturation "compatible"
+        compat = {
+            ("vibrant","vibrant"), ("balanced","balanced"), ("muted","muted"),
+            ("balanced","vibrant"), ("balanced","muted")
+        }
+        sat_pair = (qa.saturation_level, ca.saturation_level)
+        sat_bonus = 0.10 if sat_pair in compat or sat_pair[::-1] in compat else 0.0
+
+        return max(0.0, min(1.0, base + temp_bonus + sat_bonus))
+
+  
     def _color_harmony_score(self, q_path: str, c_path: str) -> float:
-        """
-        Essaie une méthode dédiée si dispo, sinon fallback: similarité entre histogrammes HSV.
-        Retourne ~[0..1].
-        """
-        # méthode native si dispo
-        if self.color:
-            for name in ("harmony_score", "compatibility_score", "score"):
-                fn = getattr(self.color, name, None)
-                if callable(fn):
-                    try:
-                        val = float(fn(q_path, c_path))
-                        # clamp
-                        return max(0.0, min(1.0, val))
-                    except Exception:
-                        pass
-
-        # fallback HSV
-        try:
-            from PIL import Image
-            def _hist(path: str) -> np.ndarray:
-                im = Image.open(path).convert("RGB").resize((128,128))
-                hsv = np.array(im.convert("HSV"), dtype=np.float32) / 255.0
-                H = hsv[...,0].reshape(-1)
-                S = hsv[...,1].reshape(-1)
-                V = hsv[...,2].reshape(-1)
-                hH, _ = np.histogram(H, bins=24, range=(0,1), density=True)
-                hS, _ = np.histogram(S, bins=8,  range=(0,1), density=True)
-                hV, _ = np.histogram(V, bins=8,  range=(0,1), density=True)
-                h = np.concatenate([hH, hS, hV]).astype(np.float32)
-                h /= (np.linalg.norm(h) + 1e-8)
-                return h
-            hq = _hist(q_path); hc = _hist(c_path)
-            sim = float(np.dot(hq, hc))
-            return max(0.0, min(1.0, sim))
-        except Exception:
+        if not self.color:
             return 0.0
+        qa = self._analyze_color(q_path)
+        ca = self._analyze_color(c_path)
+        if qa and ca:
+            return self._color_harmony_pair(qa, ca)
+        # Fallback si analyse indisponible
+        return 0.5
 
+                    
     def _season_pair(self, q_path: str, c_path: str) -> float:
-        """
-        1.0 si même 'color_temperature' si dispo, sinon 0.6 si différent.
-        Fallback: proche moyenne H/S (grossier).
-        """
-        qc = self._analyze_color(q_path)
-        cc = self._analyze_color(c_path)
-        if qc and cc:
-            t1 = getattr(qc, "color_temperature", "neutral")
-            t2 = getattr(cc, "color_temperature", "neutral")
-            return 1.0 if t1 == t2 else 0.6
-
-        # fallback très simple: compare mean hue bucket
-        (qS, _), (cS, _) = self._hsv_stats(q_path), self._hsv_stats(c_path)
-        # si saturation très faible, on considère neutre (évite faux désaccords)
+        qa = self._analyze_color(q_path)
+        ca = self._analyze_color(c_path)
+        if qa and ca:
+            return 1.0 if qa.color_temperature == ca.color_temperature else 0.6
+        # fallback HSV si analyse KO
+        (qS,_), (cS,_) = self._hsv_stats(q_path), self._hsv_stats(c_path)
         if qS < 0.15 or cS < 0.15:
             return 1.0
-        return 0.8  # neutre mais pas d'info -> quasi match
-    
+        return 0.8
+
+
+    def _rgb_to_token(self, rgb: tuple[int,int,int]) -> str:
+        """
+        Map RGB (0..255) -> nom de couleur textuel robuste (anglais, pour CLIP).
+        - Gère black/white/gray par faible saturation ou valeurs extrêmes
+        - Utilise la teinte (H) pour discriminer 12+ couleurs
+        - Détecte brown/beige/olive/navy via (S, V) + H
+        """
+        r, g, b = rgb
+        # Normalisation 0..1
+        rf, gf, bf = r/255.0, g/255.0, b/255.0
+        mx, mn = max(rf, gf, bf), min(rf, gf, bf)
+        c = mx - mn                     # chroma
+        v = mx                          # value
+        s = 0.0 if mx == 0 else c / mx  # saturation "HSV"
+
+        # Cas neutres (ordre important)
+        if v < 0.08:
+            return "black"
+        if s < 0.12 and v > 0.92:
+            return "white"
+        if s < 0.12:
+            return "gray"
+
+        # Hue en degrés [0, 360)
+        if c == 0:
+            h_deg = 0.0
+        else:
+            if mx == rf:
+                h = ((gf - bf) / c) % 6
+            elif mx == gf:
+                h = ((bf - rf) / c) + 2
+            else:
+                h = ((rf - gf) / c) + 4
+            h_deg = float(h * 60.0)
+
+        # Heuristiques pour brown / beige / olive / navy (avant le mappage standard)
+        # brown: teinte orange-jaune mais sombre/modérément saturée
+        if 15 <= h_deg < 50 and v < 0.60 and s > 0.25:
+            return "brown"
+        # beige: proche des jaunes/oranges mais faible saturation et assez clair
+        if 20 <= h_deg < 60 and v > 0.80 and s < 0.35:
+            return "beige"
+        # olive: jaune-vert peu saturé et pas très lumineux
+        if 55 <= h_deg < 95 and s < 0.40 and v < 0.75:
+            return "olive"
+        # navy: bleu très sombre
+        if 200 <= h_deg < 250 and v < 0.35:
+            return "navy"
+
+        # Mappage principal par plages de teinte
+        # (Plages légèrement élargies pour être plus tolérantes)
+        if (h_deg >= 345) or (h_deg < 15):
+            base = "red"
+        elif h_deg < 35:
+            base = "orange"
+        elif h_deg < 65:
+            base = "yellow"
+        elif h_deg < 90:
+            base = "lime"      # entre yellow et green
+        elif h_deg < 150:
+            base = "green"
+        elif h_deg < 180:
+            base = "teal"
+        elif h_deg < 195:
+            base = "cyan"
+        elif h_deg < 210:
+            base = "sky"
+        elif h_deg < 240:
+            base = "blue"
+        elif h_deg < 270:
+            base = "indigo"
+        elif h_deg < 300:
+            base = "purple"
+        elif h_deg < 330:
+            base = "magenta"
+        elif h_deg < 345:
+            base = "pink"
+        else:
+            base = "red"  # fallback
+
+        # Optionnel: raffiner avec luminosité pour "dark/ light"
+        # (évite de renvoyer "dark white" etc.)
+        if base not in {"black","white","gray","navy","brown","beige","olive"}:
+            if v < 0.25:
+                return f"dark {base}"
+            if v > 0.88 and s < 0.55:
+                # un peu plus doux / pastel si très clair & peu saturé
+                return f"light {base}"
+
+        return base
+
     # --- Texte / CLIP prompt ---
+    
     def _color_token(self, path: str) -> str:
-        """Retourne un nom de couleur grossier à partir de HSV (anglais pour CLIP)."""
+        qa = self._analyze_color(path)
+        if qa and qa.dominant_colors:
+            return self._rgb_to_token(qa.dominant_colors[0])
+        # fallback HSV
         S, V = self._hsv_stats(path)
-        try:
-            from PIL import Image
-            import numpy as np
-            im = Image.open(path).convert("RGB").resize((64,64))
-            hsv = np.array(im.convert("HSV"), dtype=np.float32) / 255.0
-            H = float(hsv[...,0].mean())
-        except Exception:
-            H = 0.0
         if S < 0.15 and V > 0.8: return "white"
         if S < 0.15 and V < 0.25: return "black"
-        if S < 0.15: return "gray"
-        # hue → label
-        h = H
-        if h < 0.04 or h >= 0.96: return "red"
-        if h < 0.08: return "orange"
-        if h < 0.16: return "yellow"
-        if h < 0.30: return "green"
-        if h < 0.40: return "cyan"
-        if h < 0.60: return "blue"
-        if h < 0.75: return "purple"
-        if h < 0.90: return "pink"
+        if S < 0.15:               return "gray"
         return "brown"
 
     def _text_prompt_score(self, query_path: str, cand_vec: np.ndarray, cand_path: str) -> float:
