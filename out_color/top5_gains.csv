@@ -1,0 +1,6 @@
+anchor_img,pos_img,pos_url,supercat,rank_img_only,rank_with_attrs,delta_rank
+dataset_mango/images/b42b89f1c7e67a6aa2ff963d39bc8f5e.jpg,dataset_mango/images/4c89c3a6d164dd827339df94e9956b60.jpg,https://shop.mango.com/fr/fr/p/teen/chaussures/ballerines-a-brides-cloutees_17036353,autres,41,36,5
+dataset_mango/images/68aa86207361e42ded11213c35b2a00b.jpg,dataset_mango/images/bd1c8a3c3b28a5b4da67476aa2ed66a0.jpg,https://shop.mango.com/fr/fr/p/femme/bijoux/collier/collier-boules-combine_17016005,accessoires,7,5,2
+dataset_mango/images/cbbc4abcdb2fe36bd2f341f13aaac04e.jpg,dataset_mango/images/905f8edd5c844b65b5faccb339f99c1e.jpg,https://shop.mango.com/fr/fr/p/femme/chaussure/chaussure-a-talon/chaussures-talon-cuir-anneau_17095989,chaussures,18,16,2
+dataset_mango/images/d4d100189437555ecd7d5441442a6a8b.jpg,dataset_mango/images/83186d3e8d65af5dbf507199b780f6f6.jpg,https://shop.mango.com/fr/fr/p/femme/chaussure/chaussure-plate/chaussures-plates-cuir_17014120,chaussures,15,13,2
+dataset_mango/images/f9ba19d85c6b88e033b9e3c4a9708ecf.jpg,dataset_mango/images/13a02e1de1b31ad16e06304b40378732.jpg,https://shop.mango.com/fr/fr/p/femme/blazer/tailles-plus/blazer-costume-en-melange-de-laine-avec-poches_17076003,vestes_manteaux,7,6,1

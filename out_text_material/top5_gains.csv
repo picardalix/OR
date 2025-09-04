@@ -1,0 +1,6 @@
+anchor_img,pos_img,pos_url,supercat,rank_img_only,rank_with_attrs,delta_rank
+dataset_mango/images/b7dfb19d3aa4b306434a8605fa5874b8.jpg,dataset_mango/images/394818d4208f3930f3b97aba3293a146.jpg,https://shop.mango.com/fr/fr/p/femme/chaussure/chaussure-plate/mocassins-cuir-fronce_17094072,chaussures,15,11,4
+dataset_mango/images/b006fdbd8cbea6d0e07d6727ceca9544.jpg,dataset_mango/images/b9520c54a8fbf0f6509a77cac5b65c90.jpg,https://shop.mango.com/fr/fr/p/femme/chaussure/chaussure-a-talon/chaussures-talon-kitten-boucle_17075976,chaussures,12,8,4
+dataset_mango/images/f9ba19d85c6b88e033b9e3c4a9708ecf.jpg,dataset_mango/images/13a02e1de1b31ad16e06304b40378732.jpg,https://shop.mango.com/fr/fr/p/femme/blazer/tailles-plus/blazer-costume-en-melange-de-laine-avec-poches_17076003,vestes_manteaux,7,4,3
+dataset_mango/images/f9ba19d85c6b88e033b9e3c4a9708ecf.jpg,dataset_mango/images/e1b26dd0787622dd74846c4fbe355428.jpg,https://shop.mango.com/fr/fr/p/femme/plus-daccessoires/chaussettes/collants-voiles-fins_17085991,hauts_maille,18,15,3
+dataset_mango/images/d4d100189437555ecd7d5441442a6a8b.jpg,dataset_mango/images/86adafbb9f9bf31b232beb35059a4bc3.jpg,https://shop.mango.com/fr/fr/p/femme/sac/bandouliere/sac-bandouliere-rabat_17025798,sacs,21,19,2

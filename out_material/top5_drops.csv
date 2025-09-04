@@ -1,0 +1,6 @@
+anchor_img,pos_img,pos_url,supercat,rank_img_only,rank_with_attrs,delta_rank
+dataset_mango/images/cbbc4abcdb2fe36bd2f341f13aaac04e.jpg,dataset_mango/images/48148a5e63f2d8ca10b1ea7fcf6d5775.jpg,https://shop.mango.com/fr/fr/p/femme/jean/straight/jean-droit-taille-basse_17046744,bas,9,18,-9
+dataset_mango/images/d4d100189437555ecd7d5441442a6a8b.jpg,dataset_mango/images/3f2a250af9aa088ea3d9733eec985830.jpg,https://shop.mango.com/fr/fr/p/femme/pantalon/pantalons-elegants/pantalon-de-tailleur-droit_17016361,chaussures,11,18,-7
+dataset_mango/images/18d1fcbfc63cc81c0f2e7b1fdfe1d6d0.jpg,dataset_mango/images/b4ca503fb5116112d64ccb0b0699816d.jpg,https://shop.mango.com/fr/fr/p/femme/pulls-et-cardigans/pull-over-maille-col-en-v_17004103,hauts_maille,32,36,-4
+dataset_mango/images/e3963808b611f241ea8fdb82bb823c0f.jpg,dataset_mango/images/6a37c94736b22526df7d3b9128128527.jpg,https://shop.mango.com/fr/fr/p/femme/pulls-et-cardigans/pull/pull-over-bi-matiere_17005821,hauts_maille,7,10,-3
+dataset_mango/images/b7dfb19d3aa4b306434a8605fa5874b8.jpg,dataset_mango/images/1f22aee992760c3b49bb588df4f47b4a.jpg,https://shop.mango.com/fr/fr/p/femme/jean/wideleg/jean-large-a-revers_17015818,bas,11,14,-3

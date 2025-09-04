@@ -1,0 +1,22 @@
+{
+  "image_model": "FashionCLIP",
+  "device": "mps",
+  "pairs": 48,
+  "weights": {
+    "w_img": 1.0,
+    "w_color": 0.12,
+    "w_matiere": 0.08,
+    "w_text": 0.08
+  },
+  "options": {
+    "use_color": true,
+    "use_material": false,
+    "use_text": false,
+    "fitb_same_supercat": true,
+    "n_fitb_negs": 3
+  },
+  "P@3_baseline": 0.1042,
+  "P@3_with_attrs": 0.1042,
+  "FITB_baseline": 0.25,
+  "FITB_with_attrs": 0.25
+}
