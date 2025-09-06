@@ -16,6 +16,13 @@ import torch
 from sklearn.preprocessing import normalize
 from sklearn.neighbors import NearestNeighbors
 
+
+try:
+    from rembg import remove
+    HAS_REMBG = True
+except Exception:
+    HAS_REMBG = False
+
 # Optional FAISS
 try:
     import faiss  # type: ignore
@@ -52,6 +59,8 @@ class Article:
     embedding: Optional[np.ndarray] = None
     bbox: Optional[List[float]] = None
     crop_path: Optional[str] = None
+    display_path: Optional[str] = None      # <-- NEW (JPG pour l’UI)
+    feature_path: Optional[str] = None
 
 
 @dataclass
@@ -67,10 +76,11 @@ class Outfit:
 class DataLoader:
     """Gestionnaire des données Fashionpedia"""
 
-    def __init__(self, annotation_file: str, image_dir: str):
+    def __init__(self, annotation_file: str, image_dir: str, crop_dir:str):
         self.annotation_file = annotation_file
         self.image_dir = Path(image_dir)
         self.annotations = None
+        self.crop_dir = Path(crop_dir)
         self.category_mapping = self._build_category_mapping()
 
     def _build_category_mapping(self) -> Dict[str, str]:
@@ -95,15 +105,36 @@ class DataLoader:
             "glove": "accessory", "belt": "accessory", "tie": "accessory",
 
             # Bags
-            "bag": "bag", "purse": "bag", "handbag": "bag", "backpack": "bag"
-        }
+            "bag": "bag", "purse": "bag", "handbag": "bag", "backpack": "bag"}
+
+
+            # def load_annotations(self) -> Dict:
+            #     """Charge les annotations depuis le fichier JSON"""
+            #     with open(self.annotation_file, 'r') as f:
+            #         self.annotations = json.load(f)
+            #     return self.annotations
 
     def load_annotations(self) -> Dict:
         """Charge les annotations depuis le fichier JSON"""
+        
+        if os.path.exists(self.annotation_file):
+            file_size = os.path.getsize(self.annotation_file)
+            
+            if file_size == 0:
+                raise ValueError(f"Le fichier {self.annotation_file} est vide")
+        
         with open(self.annotation_file, 'r') as f:
-            self.annotations = json.load(f)
+            content = f.read()
+            if not content.strip():
+                raise ValueError("Le fichier JSON est vide ou ne contient que des espaces")
+            
+            try:
+                self.annotations = json.loads(content)
+            except json.JSONDecodeError as e:
+                print(f"Erreur JSON : {e}")
+                raise
+        
         return self.annotations
-
     def _map_category_to_group(self, category_name: str) -> Optional[str]:
         """Mappe une catégorie vers son groupe principal"""
         category_clean = category_name.lower().split(',')[0].strip()
@@ -112,13 +143,13 @@ class DataLoader:
                 return group
         return None
 
-    def extract_articles(self, max_articles: int = 2000,
-                         target_groups: List[str] = None) -> List[Article]:
+    def extract_articles(self, max_articles: int = 1000,
+                    target_groups: List[str] = None) -> List[Article]:
         if not self.annotations:
             self.load_annotations()
 
         if target_groups is None:
-            target_groups = ["top", "bottom", "shoes"] #accessory", "bag"]
+            target_groups = ["top", "bottom", "shoes"]
 
         category_map = {cat["id"]: cat["name"] for cat in self.annotations["categories"]}
         images_by_id = {img["id"]: img for img in self.annotations["images"]}
@@ -126,7 +157,7 @@ class DataLoader:
         articles: List[Article] = []
         
         for annotation in self.annotations["annotations"]:
-            
+        
             if len(articles) >= max_articles:
                 break
 
@@ -144,15 +175,23 @@ class DataLoader:
             if not image_path.exists():
                 continue
 
+            article_id = f"{annotation['image_id']}_{annotation['id']}"
+            crop_jpg = self.crop_dir / f"{article_id}.jpg"
+            crop_png = self.crop_dir / f"{article_id}.png"
+                        
+            if not (crop_jpg.exists() or crop_png.exists()):
+                continue
+
+
             article = Article(
-                id=f"{annotation['image_id']}_{annotation['id']}",
-                category_id=annotation["category_id"],
-                category_name=category_name,
-                group=group,
-                attributes=annotation.get("attributes", []),
-                image_path=str(image_path),
-                bbox=annotation["bbox"]
-            )
+            id=f"{annotation['image_id']}_{annotation['id']}",
+            category_id=annotation["category_id"],
+            category_name=category_name,
+            group=group,
+            attributes=annotation.get("attributes", []),
+            image_path=str(image_path),
+            bbox=annotation["bbox"]
+        )
             articles.append(article)
         return articles
 
@@ -160,12 +199,19 @@ class DataLoader:
 # -------------------- Image Processor --------------------
 
 class ImageProcessor:
-    """Processeur d'images avec cropping amélioré (cache sur disque)"""
+    """Processeur d'images avec cropping amélioré + suppression de fond (cache sur disque)
+    feature_mode: 'auto_png' | 'jpg_only'
+      - 'auto_png' → utilise {id}.png pour les features si dispo, sinon {id}.jpg
+      - 'jpg_only' → n'utilise que {id}.jpg (ablation)
+    """
 
-    def __init__(self, crop_dir: str, target_size: int = 224):
+    def __init__(self, crop_dir: str, target_size: int = 224,
+                 keep_alpha: bool = True, feature_mode: str = 'auto_png'):
         self.crop_dir = Path(crop_dir)
         self.crop_dir.mkdir(parents=True, exist_ok=True)
         self.target_size = target_size
+        self.feature_mode = feature_mode if feature_mode in ('auto_png','jpg_only') else 'auto_png'
+        self.keep_alpha = keep_alpha
 
     def _validate_bbox(self, bbox: List[float], img_width: int, img_height: int,
                        min_size: int = 80) -> bool:
@@ -175,10 +221,10 @@ class ImageProcessor:
                 x + w <= img_width and y + h <= img_height)
 
     def _expand_bbox(self, bbox: List[float], img_width: int, img_height: int,
-                     expansion_factor: float = 0.1) -> List[float]:
+                     expansion_factor: float = 0.05) -> List[float]:
         x, y, w, h = bbox
-        pad_x = max(10, int(w * expansion_factor))
-        pad_y = max(10, int(h * expansion_factor))
+        pad_x = max(5, int(w * expansion_factor))
+        pad_y = max(5, int(h * expansion_factor))
         new_x = max(0, x - pad_x)
         new_y = max(0, y - pad_y)
         new_w = min(img_width - new_x, w + 2 * pad_x)
@@ -203,27 +249,69 @@ class ImageProcessor:
             crop = crop.resize((self.target_size, self.target_size), Image.Resampling.LANCZOS)
         return crop
 
-    def process_article(self, article: Article) -> Optional[str]:
-        """Retourne le chemin du crop. Ne recroppe pas si déjà présent."""
-        crop_path = self.crop_dir / f"{article.id}.jpg"
-        if crop_path.exists():
-            article.crop_path = str(crop_path)
-            return str(crop_path)
+    def _remove_bg(self, crop: Image.Image) -> Image.Image:
+        """Supprime le fond via rembg (RGBA si keep_alpha=True)."""
+        if not HAS_REMBG:
+            return crop
 
-        try:
+        out = remove(crop)
+        if isinstance(out, bytes):
+            from io import BytesIO
+            out = Image.open(BytesIO(out))
+
+        if self.keep_alpha:
+            return out.convert("RGBA")
+        else:
+            # si on veut JPG → coller sur fond blanc
+            rgba = out.convert("RGBA")
+            bg = Image.new("RGB", rgba.size, (255, 255, 255))
+            bg.paste(rgba, mask=rgba.split()[-1])  # utiliser alpha comme masque
+            return bg
+
+    def process_article(self, article) -> Optional[str]:
+        """
+        Prépare les crops JPG et PNG et choisit le chemin *feature* selon self.feature_mode.
+        - Toujours assurer {id}.jpg pour l'affichage utilisateur.
+        - Si feature_mode='auto_png', utiliser {id}.png pour les features s'il existe (sinon fallback JPG).
+        Retourne le chemin *feature* choisi (compatibilité).
+        """
+        jpg_path = self.crop_dir / f"{article.id}.jpg"
+        png_path = self.crop_dir / f"{article.id}.png"
+
+        # (Ré)générer si besoin
+        if not jpg_path.exists() or (self.feature_mode == 'auto_png' and not png_path.exists()):
+            print(f"🔄 Génération crop pour {article.id}...")
             with Image.open(article.image_path) as img:
-                img = img.convert('RGB')
+                img = img.convert("RGB")
                 if not self._validate_bbox(article.bbox, img.width, img.height):
                     return None
                 expanded_bbox = self._expand_bbox(article.bbox, img.width, img.height)
                 crop = self._create_smart_crop(img, expanded_bbox)
                 crop = crop.filter(ImageFilter.UnsharpMask(radius=1, percent=120, threshold=3))
-                crop.save(crop_path, 'JPEG', quality=85, optimize=True)
-                article.crop_path = str(crop_path)
-                return str(crop_path)
-        except Exception as e:
-            print(f"Erreur crop {article.id}: {e}")
-            return None
+
+                # JPG pour l'affichage
+                if not jpg_path.exists():
+                    crop.save(jpg_path, "JPEG", quality=85, optimize=True)
+
+                # PNG pour features (si demandé)
+                if self.feature_mode == 'auto_png' and not png_path.exists():
+                    fg = self._remove_bg(crop)
+                    fg.save(png_path, "PNG", optimize=True)
+        else:
+            print(f"✅ Crop déjà existant pour {article.id}, pas de régénération.")
+        # Renseigner les chemins
+        article.display_path = str(jpg_path) if jpg_path.exists() else (str(png_path) if png_path.exists() else None)
+        if self.feature_mode == 'auto_png' and png_path.exists():
+            feature_path = str(png_path)
+        elif jpg_path.exists():
+            feature_path = str(jpg_path)
+        else:
+            feature_path = getattr(article, "image_path", None)
+
+        article.feature_path = feature_path
+        article.crop_path = feature_path   # compat
+        return feature_path
+
 
 # -------------------- Embedding Generator (multi-backends) --------------------
 
@@ -295,7 +383,6 @@ class EmbeddingGenerator:
 
     def generate_embeddings(self, image_paths: List[str], batch_size: int = 16) -> List[Optional[np.ndarray]]:
         embeddings: List[Optional[np.ndarray]] = []
-        missing_files = [p for p in image_paths if not os.path.exists(p)]
         # IMPORTANT : encoder seulement les fichiers existants
         for i in range(0, len(image_paths), batch_size):
             batch_paths = image_paths[i:i + batch_size]
@@ -418,7 +505,6 @@ class SimilarityEngine:
             sim = 1.0 - float(d)
             emb = self.emb_by_group[target_group][j]
             out.append((sim, art_idx, emb))
-        # tri décroissant par similarité brute
         out.sort(key=lambda x: x[0], reverse=True)
         return out
 
@@ -486,35 +572,45 @@ class OutfitBuilder:
             return [1.0] * len(items)
         ps = PreferenceScorer(
             color_analyzer=self.scorer.color_analyzer,
-            seasonal_classifier=self.scorer.season_classifier
+            seasonal_classifier=self.scorer.seasonal_classifier
         )
         raw = [ps.article_preference_score(it, preferences) for it in items] 
-        return [1.0 + float(alpha) * float(r) for r in raw]
+        weights = [1.0 + float(alpha) * float(r) for r in raw]
+        print("[PREF][builder] items:", [getattr(it, "id", None) for it in items],
+      "raw:", [round(x,3) for x in raw], "alpha:", alpha,
+      "weights:", [round(w,3) for w in weights])
+        return weights
 
 
     def generate(self,
-                 slot_to_candidates: Dict[str, List[Article]],
-                 beam_size: int = 10,
-                 max_outfits: int = 3,
-                 preferences: Optional[UserPreferences] = None,   # <-- NEW
-                 pref_weight: float = 0.35                        # <-- NEW
-                 ) -> List[Outfit]:
+             slot_to_candidates: Dict[str, List[Article]],
+             beam_size: int = 10,
+             max_outfits: int = 3,
+             preferences: Optional[UserPreferences] = None,
+             pref_weight: float = 0.35) -> List[Outfit]:
+        # 1) Initialisation du faisceau
+        beams = [([], 0.0)]
+
+        # 2) Expansion slot par slot
         for slot in slot_to_candidates:
             next_beams = []
             for items, base_score in beams:
                 for cand in slot_to_candidates[slot]:
                     new_items = items + [cand]
-                    weights = self._pref_weights(new_items, preferences, alpha=pref_weight)   # <--- AJOUT
-                    adv = self.scorer.calculate_advanced_score(new_items, weights)            # <--- AJOUT
+                    weights = self._pref_weights(new_items, preferences, alpha=pref_weight)
+                    adv = self.scorer.calculate_advanced_score(new_items, weights)
                     score = float(adv.overall_score) - self._penalty_rules(new_items)
                     next_beams.append((new_items, score))
             next_beams.sort(key=lambda x: x[1], reverse=True)
             beams = next_beams[:max(1, beam_size)]
 
+        # 3) Génération finale des outfits
         beams.sort(key=lambda x: x[1], reverse=True)
         outfits: List[Outfit] = []
         for items, score in beams[:max_outfits]:
-            outfits.append(Outfit(items=items, similarities=[1.0] * len(items), coherence_score=float(score)))
+            outfits.append(Outfit(items=items,
+                                similarities=[1.0] * len(items),
+                                coherence_score=float(score)))
         return outfits
 
 
@@ -547,6 +643,9 @@ class OutfitRecommender:
         self.w_red = w_redundancy
         self.mmr_lambda = mmr_lambda
         self.topk_per_slot = topk_per_slot
+        self.color_analyzer = self.advanced_scorer.color_analyzer
+        self.seasonal_classifier = self.advanced_scorer.seasonal_classifier
+
 
     def set_quality_thresholds(self, min_seasonal: float, min_color: float, min_overall: float):
         self.outfit_filter.min_seasonal_coherence = min_seasonal
@@ -566,7 +665,6 @@ class OutfitRecommender:
     def detect_slot_from_image(self, image_path: str) -> Optional[str]:
         """Détecte le groupe (slot) dominant de l'image requête via ANN,
         en réutilisant _detect_query_group côté recommender."""
-        # 1) Encodage de l'image -> embedding (uniquement EmbeddingGenerator)
         embs = self.emb_gen.generate_embeddings([image_path])
         if not embs or embs[0] is None:
             return None
@@ -590,7 +688,6 @@ class OutfitRecommender:
             (score_total, sim_q, idx_article, emb_article, coh, pref_item)
         Optionnellement tronquée à topk.
         """
-        print("pref 3 : ",preferences)
         selected_items = selected_items or []
         selected_embs = selected_embs or []
 
@@ -675,12 +772,10 @@ class OutfitRecommender:
         pool = self.engine.ann_search(query_embedding, group, topk=self.pool_size)
         if not pool:
             return None
-
         ps = PreferenceScorer(
             color_analyzer=self.advanced_scorer.color_analyzer,
             seasonal_classifier=self.advanced_scorer.seasonal_classifier
         ) if preferences else None
-
         scored = []
         for sim_q, idx, emb in pool:
             if sim_q < similarity_threshold:
@@ -698,7 +793,6 @@ class OutfitRecommender:
 
             # préférence par article (0..1)
             pref_item = ps.article_preference_score(cand, preferences) if ps else 0.0
-
             # score combiné AVEC préférence
             score = self.w_cos * float(sim_q) + self.w_coh * coh - self.w_red * red + float(pref_weight) * pref_item
 
@@ -727,15 +821,28 @@ class OutfitRecommender:
         if crop_path and os.path.exists(crop_path):
             try:
                 color_analysis = self.advanced_scorer.color_analyzer.analyze_colors(crop_path)
+
                 seasonal_profile = self.advanced_scorer.seasonal_classifier.classify_season(
                     selected_art.category_name,
                     [str(a) for a in selected_art.attributes],
                     color_analysis
                 )
+
                 selected_art.scores.update({
                     "color": float(color_analysis.color_harmony_score),
                     "season": float(seasonal_profile.confidence),
                 })
+
+                # --- Ajout attributs pour compatibilité avec _explain_outfit_safe ---
+                selected_art.cosine = float(chosen_sim_q)
+                selected_art.color_score = float(color_analysis.color_harmony_score)
+                selected_art.season_score = float(seasonal_profile.confidence)
+
+                setattr(selected_art, "cosine", float(chosen_sim_q))
+                setattr(selected_art, "color_score", float(color_analysis.color_harmony_score))
+                setattr(selected_art, "season_score", float(seasonal_profile.confidence))
+
+
             except Exception as e:
                 print(f"Erreur calcul scores individuels: {e}")
 
@@ -751,12 +858,13 @@ class OutfitRecommender:
     pref_weight: float = 0.35
 ) -> Optional[Outfit]:
         """Version single-outfit """
-        print("pref 5 : ",preferences)
         if target_groups is None:
             target_groups = ["top", "bottom", "shoes"]
 
         # Obtenir embedding du query
+        #query_image_path = self._prefer_png(query_image_path)
         q_embs = self.emb_gen.generate_embeddings([query_image_path])
+
         if not q_embs or q_embs[0] is None:
             return None
         q = q_embs[0]
@@ -813,18 +921,23 @@ class OutfitRecommender:
             outfit = Outfit(items=selected, similarities=sims, coherence_score=float(adv.overall_score))
             outfit.advanced_score = adv  # type: ignore[attr-defined]
 
+            outfit.season_label = getattr(adv, "predicted_season", None) or getattr(adv, "season_label", None)
+            outfit.season_confidence = float( getattr(adv, "season_confidence", None) or getattr(adv, "seasonal_coherence", 0.0))
+            outfit.redundancy = float(getattr(adv, "redundancy", 0.0))
+            outfit.harmonious_pairs = (getattr(adv, "harmonious_pairs", None) or getattr(adv, "color_pairs", None) or [])
             if preferences:
                 try:
 
-                    scorer = PreferenceScorer(color_analyzer=self.color_analyzer,
-                          seasonal_classifier=self.season_classifier)
+                    scorer = PreferenceScorer(color_analyzer=self.advanced_scorer.color_analyzer,
+                                                seasonal_classifier=self.advanced_scorer.seasonal_classifier )
                     pref = float(scorer.outfit_preference_score(outfit, preferences))
 
                     outfit.preference_score = pref
                     base = float(getattr(outfit, "coherence_score", 0.0))
                     outfit.rank_score = (1.0 - pref_weight) * base + pref_weight * pref
+                    print(f"[PREF][single] base={base:.3f} pref={pref:.3f} w={pref_weight:.2f} -> rank={outfit.rank_score:.3f}")
                 except Exception as e:
-                    print(f"Erreur calcul préférences: {e}")  # Pour débugger
+                    print(f"Erreur calcul préférences: {e}")  
                     outfit.preference_score = 0.0
                     outfit.rank_score = float(getattr(outfit, "coherence_score", 0.0))
             else:
@@ -846,11 +959,12 @@ class OutfitRecommender:
     ) -> List[Outfit]:
 
         """Construit des tenues par slots, applique filtres qualité et rerank préférences."""
-        print("pref 6 : ",preferences)
         pref_weight = float(max(0.0, min(1.0, pref_weight)))
 
         # 1) Embedding requête
-        q_embs = self.emb_gen.generate_embeddings([query_image_path])  # si tu as self.emb_gen, sinon EmbeddingGenerator()
+        #query_image_path = self._prefer_png(query_image_path)
+        q_embs = self.emb_gen.generate_embeddings([query_image_path])
+
         if not q_embs or q_embs[0] is None:
             return []
         q = np.asarray(q_embs[0])
@@ -929,14 +1043,81 @@ class OutfitRecommender:
                 if ok:
                     o.coherence_score = float(adv.overall_score)
                     o.advanced_score = adv  # hint UI
+
+                    o.season_label = getattr(adv, "predicted_season", None) or getattr(adv, "season_label", None)
+                    o.season_confidence = float(
+                        getattr(adv, "season_confidence", None) or getattr(adv, "seasonal_coherence", 0.0) )
+                    o.redundancy = float(getattr(adv, "redundancy", 0.0))
+                    o.harmonious_pairs = ( getattr(adv, "harmonious_pairs", None) or getattr(adv, "color_pairs", None) or [])
                     if (ms,mc,mo) != (ms0,mc0,mo0):
                         o.relaxed_thresholds = (ms,mc,mo)
                     filtered.append(o)
+
                     break
+            # --- Peupler les scores par item dans le builder ---
+            try:
+                # q est déjà calculé plus haut dans la fonction
+                for it in o.items:
+                    # cosine vs requête si embedding dispo
+                    cos = 0.0
+                    v = getattr(it, "embedding", None)
+                    if v is not None:
+                        try:
+                            vv = np.asarray(v)
+                            n = float(np.linalg.norm(vv))
+                            if n > 1e-8:
+                                cos = float(np.dot(q, vv / n))
+                        except Exception:
+                            pass
+
+                    # chemin image (reprend ta logique _image_path_for_item du module)
+                    img_path = None
+                    p = getattr(it, "crop_path", None) or getattr(it, "image_path", None)
+                    if p and os.path.exists(p):
+                        img_path = p
+                    else:
+                        try:
+                            crop_dir = getattr(self, "crop_dir", None)
+                            if crop_dir and getattr(it, "id", None):
+                                cand = str(Path(crop_dir) / f"{it.id}.jpg")
+                                if os.path.exists(cand):
+                                    img_path = cand
+                        except Exception:
+                            pass
+
+                    # color + saison
+                    color_score = 0.0
+                    season_score = 0.0
+                    if img_path and os.path.exists(img_path):
+                        try:
+                            ca = self.advanced_scorer.color_analyzer.analyze_colors(img_path)
+                            color_score = float(getattr(ca, "color_harmony_score", 0.0))
+                            sp = self.advanced_scorer.seasonal_classifier.classify_season(
+                                it.category_name,
+                                [str(a) for a in getattr(it, "attributes", [])],
+                                ca
+                            )
+                            season_score = float(getattr(sp, "confidence", 0.0))
+                        except Exception:
+                            pass
+
+                    it.scores = {"cosine": cos, "color": color_score, "season": season_score}
+                    # pour compat UI
+                    it.cosine = cos
+                    it.color_score = color_score
+                    it.season_score = season_score
+            except Exception as e:
+                print("[builder] populate item scores failed:", e)
+
 
         # 5) Re-rank final par préférences (déjà en place)
         if preferences and filtered:
+            #filtered = apply_preference_rerank(filtered, preferences, w_pref=pref_weight)
+            before = [(getattr(o,"coherence_score",0.0), getattr(o,"preference_score",0.0)) for o in filtered]
             filtered = apply_preference_rerank(filtered, preferences, w_pref=pref_weight)
+            after = [getattr(o,"rank_score",0.0) for o in filtered]
+            print("[PREF][rerank]", {"w": pref_weight, "before": before, "after": [round(x,3) for x in after]})
+
         else:
             filtered = sorted(filtered, key=lambda x: getattr(x, "coherence_score", 0.0), reverse=True)
 
@@ -958,22 +1139,35 @@ class FashionRecommendationSystem:
     """Système principal de recommandation de mode"""
 
     def __init__(self, annotation_file: str, image_dir: str, crop_dir: str,
-                 ann_backend: str = "faiss"):
-        self.data_loader = DataLoader(annotation_file, image_dir)
-        self.image_processor = ImageProcessor(crop_dir)
+                 ann_backend: str = "faiss",  feature_mode: str = 'auto_png'):
+        self.data_loader = DataLoader(annotation_file, image_dir, crop_dir)
+        self.image_processor = ImageProcessor(crop_dir, feature_mode=feature_mode)
         self.embedding_generator = EmbeddingGenerator()#cache_dir="emb_cache"
         self.articles: List[Article] = []
         self.similarity_engine: Optional[SimilarityEngine] = None
         self.recommender: Optional[OutfitRecommender] = None
         self.ann_backend = ann_backend
         self.crop_dir = crop_dir 
+    # place-le juste après __init__ par ex.
+    # def _prefer_png(self, path: str) -> str:
+    #     """Si feature_mode=auto_png et un .png homonyme existe, on l'utilise pour l'analyse."""
+    #     try:
+    #         if getattr(self.image_processor, "feature_mode", "auto_png") == "auto_png":
+    #             p = Path(path)
+    #             if p.suffix.lower() in (".jpg", ".jpeg"):
+    #                 png = p.with_suffix(".png")
+    #                 if png.exists():
+    #                     return str(png)
+    #     except Exception:
+    #         pass
+    #     return path
 
-    def initialize(self, max_articles: int = 2000):
+    def initialize(self, max_articles: int = 1000):
         print("Chargement des données...")
         self.articles = self.data_loader.extract_articles(max_articles)
         self.advanced_scorer = AdvancedOutfitScorer()
         self.color_analyzer = ColorAnalyzer()
-        self.season_classifier = SeasonalClassifier()
+        self.seasonal_classifier = SeasonalClassifier()
         self.recommender = OutfitRecommender(self.similarity_engine, 
                                    emb_gen=self.embedding_generator)
         print(f"Articles extraits: {len(self.articles)}")
@@ -991,7 +1185,7 @@ class FashionRecommendationSystem:
 
         print("Génération des embeddings...")
         embeddings = self.embedding_generator.generate_embeddings(
-            [getattr(a, "crop_path", a.image_path) for a in self.articles]
+            [getattr(a, "feature_path", None) or getattr(a, "crop_path", None) or a.image_path for a in self.articles]
         )
 
         final_articles: List[Article] = []
@@ -1022,7 +1216,6 @@ class FashionRecommendationSystem:
     preferences: Optional[UserPreferences] = None,
     pref_weight: float = 0.35
 ) -> Optional[Outfit]:
-        print("pref 7 : ",preferences)
         if not self.recommender:
             raise RuntimeError("Système non initialisé. Appelez initialize() d'abord.")
         return self.recommender.recommend_outfit(
@@ -1047,7 +1240,7 @@ class FashionRecommendationSystem:
     preferences: Optional[UserPreferences] = None,
     pref_weight: float = 0.35
 ):
-        print("pref 8 : ",preferences)
+
         if not self.recommender:
             raise RuntimeError("Système non initialisé. Appelez initialize() d'abord.")
         try:
@@ -1069,25 +1262,57 @@ class FashionRecommendationSystem:
         """
         assert hasattr(self, "advanced_scorer") and self.advanced_scorer is not None, "AdvancedOutfitScorer non initialisé"
         assert hasattr(self, "color_analyzer") and self.color_analyzer is not None, "ColorAnalyzer non initialisé"
-        assert hasattr(self, "season_classifier") and self.season_classifier is not None, "SeasonalClassifier non initialisé"
+        assert hasattr(self, "seasonal_classifier") and self.seasonal_classifier is not None, "SeasonalClassifier non initialisé"
 
         items = list(getattr(outfit, "items", []))
 
         # ---- helpers chemin image (prend crop_path sinon image_path, sinon CROP_DIR/id.jpg)
+        # def _image_path_for_item(it) -> str | None:
+        #             p = getattr(it, "crop_path", None) or getattr(it, "image_path", None)
+        #             if p and os.path.exists(p):
+        #                 return p
+        #             # fallback sur CROP_DIR/<id>.jpg si dispo dans ton projet
+        #             try:
+        #                 crop_dir = getattr(self, "crop_dir", None)
+        #                 if crop_dir and getattr(it, "id", None):
+        #                     cand = str(Path(crop_dir) / f"{it.id}.jpg")
+        #                     if os.path.exists(cand):
+        #                         return cand
+        #             except Exception:
+        #                 pass
+        #             return None
+
+
         def _image_path_for_item(it) -> str | None:
+            # Détermine le mode
+            feature_mode = getattr(self, "feature_mode", getattr(getattr(self, "image_processor", None), "feature_mode", "auto_png"))
+
+            # 1) Chemin direct exposé par l’item
             p = getattr(it, "crop_path", None) or getattr(it, "image_path", None)
-            if p and os.path.exists(p):
-                return p
-            # fallback sur CROP_DIR/<id>.jpg si dispo dans ton projet
-            try:
-                crop_dir = getattr(self, "crop_dir", None)
-                if crop_dir and getattr(it, "id", None):
-                    cand = str(Path(crop_dir) / f"{it.id}.jpg")
-                    if os.path.exists(cand):
-                        return cand
-            except Exception:
-                pass
+            if p:
+                pth = Path(p)
+                if feature_mode == "auto_png" and pth.suffix.lower() in (".jpg", ".jpeg"):
+                    png = pth.with_suffix(".png")
+                    if png.exists():
+                        return str(png)
+                if pth.exists():
+                    return str(pth)
+
+            # 2) Fallback via crop_dir et l'id de l'article
+            crop_dir = getattr(self, "crop_dir", None) or getattr(getattr(self, "image_processor", None), "crop_dir", None)
+            if crop_dir and getattr(it, "id", None):
+                base = Path(crop_dir) / f"{it.id}"
+                if feature_mode == "auto_png":
+                    cand = base.with_suffix(".png")
+                    if cand.exists():
+                        return str(cand)
+                for ext in (".jpg", ".jpeg"):
+                    cand = base.with_suffix(ext)
+                    if cand.exists():
+                        return str(cand)
+
             return None
+
 
         # ---- Similarités 
         similarities = []
@@ -1126,7 +1351,7 @@ class FashionRecommendationSystem:
             # Seasonal profile à partir de la catégorie + attributs + analyse couleurs
             cat = getattr(it, "category_name", "") or ""
             attrs = [str(a) for a in getattr(it, "attributes", [])] if getattr(it, "attributes", None) is not None else []
-            sp = self.season_classifier.classify_season(cat, attrs, ca)
+            sp = self.seasonal_classifier.classify_season(cat, attrs, ca)
             seasonal_profiles.append(sp)
 
         # ---- Score agrégé avancé (ta classe)

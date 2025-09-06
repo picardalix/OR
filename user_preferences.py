@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 """
 user_preferences.py
@@ -15,7 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Tuple
 import re
-import math
+from types import SimpleNamespace 
+from typing import Any 
 
 # Dépendances internes du projet
 try:
@@ -122,6 +122,7 @@ class UserPreferences:
     def from_text(text: str) -> "UserPreferences":
         """Parser minimaliste en FR pour extraire items, couleurs, saison, style."""
         t = _norm(text)
+        print(f"DEBUG: Texte normalisé: '{t}'")
         items, colors, styles = [], [], []
         season: Optional[str] = None
         excl_items, excl_colors = [], []
@@ -129,6 +130,7 @@ class UserPreferences:
         # Extractions simples par mots-clés
         for word, key in _ITEM_KEYWORDS.items():
             if re.search(rf"\b{re.escape(word)}s?\b", t):
+                print(f"DEBUG: Trouvé item '{word}' -> '{key}'") 
                 items.append(key)
 
         for word, key in _COLOR_KEYWORDS.items():
@@ -150,7 +152,7 @@ class UserPreferences:
         for word, key in _COLOR_KEYWORDS.items():
             if re.search(rf"(pas de|sans)\s+{re.escape(word)}", t):
                 excl_colors.append(key)
-
+        print("Affichage dans userPreferences : ",_unique(items), _unique(colors), season, _unique(styles), _unique(excl_items), _unique(excl_colors))
         return UserPreferences(
             text=text.strip(),
             desired_items=_unique(items),
@@ -162,17 +164,7 @@ class UserPreferences:
         )
 
 
-# ------------------------- Scoring préférences -------------------------
-
 class PreferenceScorer:
-    """
-    Calcule un score d'alignement aux préférences pour un Article ou un Outfit.
-    - Catégorie / item voulu
-    - Couleurs
-    - Saison
-    (Style laissé en TODO car dépend des attributs/labels dispo)
-    """
-
     def __init__(self, color_analyzer=None, seasonal_classifier=None) -> None:
         self.color_analyzer = color_analyzer or (ColorAnalyzer() if ColorAnalyzer else None)
         self.seasonal_classifier = seasonal_classifier or (SeasonalClassifier() if SeasonalClassifier else None)
@@ -181,6 +173,11 @@ class PreferenceScorer:
         self.w_item = 0.40
         self.w_color = 0.40
         self.w_season = 0.20
+
+    # --- helpers NEW ---------------------------------------------------------
+    def _image_path(self, article) -> Optional[str]:  # NEW
+        return getattr(article, "crop_path", None) or getattr(article, "image_path", None)
+    
 
     # --------------------- Couleur: RGB -> nom FR simple ---------------------
     @staticmethod
@@ -232,7 +229,88 @@ class PreferenceScorer:
             return "rose"
         return "multi"
 
-    # --------------------- Scores élémentaires ---------------------
+    def _coerce_to_color_analysis(self, raw: Any):    # NEW
+        """
+        Convertit ce que renvoie ColorAnalyzer en un objet qui a au moins
+        .color_temperature ∈ {warm,cool,neutral}
+        .saturation_level  ∈ {vibrant,muted,normal}
+        .palette (liste de RGB) si possible
+        """
+        # Si raw a déjà les bons attributs, on le renvoie tel quel
+        has_temp = hasattr(raw, "color_temperature")
+        has_sat  = hasattr(raw, "saturation_level")
+        if has_temp and has_sat:
+            return raw
+
+        # Récupère une palette RGB
+        if hasattr(raw, "dominant_colors") and raw.dominant_colors:
+            palette = list(raw.dominant_colors)
+        elif isinstance(raw, (list, tuple)) and raw:
+            palette = list(raw)
+        else:
+            palette = []
+
+        # Dérive temp/sat si absents
+        def rgb_to_hsv(rgb):
+            r, g, b = [c/255.0 for c in rgb]
+            mx, mn = max(r, g, b), min(r, g, b)
+            v = mx
+            d = mx - mn
+            s = 0.0 if mx == 0 else d / mx
+            if d == 0:
+                h = 0.0
+            elif mx == r:
+                h = ((g - b) / d) % 6
+            elif mx == g:
+                h = (b - r) / d + 2
+            else:
+                h = (r - g) / d + 4
+            h = h * 60.0  # degrés
+            return h, s, v
+
+        hs = [rgb_to_hsv(tuple(map(int, c))) for c in palette] if palette else []
+        if hs:
+            s_mean = sum(s for _, s, _ in hs) / len(hs)
+
+            def is_warm(h):  # rouges→jaunes (~[-60..90] mod 360)
+                return (h < 90) or (h >= 300)
+
+            warm_cnt = sum(1 for h, _, _ in hs if is_warm(h))
+            cool_cnt = len(hs) - warm_cnt
+
+            if s_mean < 0.12:
+                temp = "neutral"
+            elif warm_cnt > cool_cnt:
+                temp = "warm"
+            elif cool_cnt > warm_cnt:
+                temp = "cool"
+            else:
+                temp = "neutral"
+
+            if s_mean >= 0.55:
+                sat = "vibrant"
+            elif s_mean <= 0.25:
+                sat = "muted"
+            else:
+                sat = "normal"
+        else:
+            temp, sat = "neutral", "normal"
+
+        return SimpleNamespace(color_temperature=temp,
+                               saturation_level=sat,
+                               palette=palette)
+
+    def _get_color_analysis(self, article):           # NEW
+        path = self._image_path(article)
+        if not (self.color_analyzer and path):
+            return None
+        if path in self._ca_cache:
+            return self._ca_cache[path]
+        raw = self.color_analyzer.analyze_colors(path)
+        ca = self._coerce_to_color_analysis(raw)
+        self._ca_cache[path] = ca
+        return ca
+    # ------------------------------------------------------------------------
 
     def _score_item(self, article, prefs: UserPreferences) -> float:
         if not prefs.desired_items and not prefs.exclude_items:
@@ -248,48 +326,56 @@ class PreferenceScorer:
     def _score_color(self, article, prefs: UserPreferences) -> float:
         if not self.color_analyzer or not prefs.colors:
             return 0.0
-        # On essaie d'utiliser un crop si possible
-        path = getattr(article, "crop_path", None) or getattr(article, "image_path", None)
+        path = self._image_path(article)
         if not path:
             return 0.0
         try:
-            analysis = self.color_analyzer.analyze_colors(path, n_colors=4)
-            # analysis peut être ColorAnalysis ou liste de couleurs suivant l'implémentation
-            if hasattr(analysis, "dominant_colors"):
-                cols = list(getattr(analysis, "dominant_colors"))
-            else:
-                cols = list(analysis)  # type: ignore
+            analysis = self._get_color_analysis(article)  # NEW (réutilise le cache)
+            # Récupère la palette quelle que soit la forme
+            cols = []
+            if hasattr(analysis, "dominant_colors") and analysis.dominant_colors:
+                cols = list(analysis.dominant_colors)
+            elif hasattr(analysis, "palette") and analysis.palette:
+                cols = list(analysis.palette)
+            elif isinstance(analysis, (list, tuple)):
+                cols = list(analysis)
+
             names = {_norm(self._rgb_to_basic_name(tuple(map(int, c))))
                      for c in cols if c is not None}
             if not names:
                 return 0.0
             desired = {c for c in prefs.colors}
             inter = names & desired
-            # Jaccard simple
             score = len(inter) / float(len(names | desired))
             return float(max(0.0, min(1.0, score)))
         except Exception:
+            print("Exception dans analyse couleur prefs")
             return 0.0
 
     def _score_season(self, article, prefs: UserPreferences) -> float:
         if not self.seasonal_classifier or not prefs.season:
             return 0.0
-        # Utilise nom de catégorie + attributs texte si présents
+
         cat = str(getattr(article, "category_name", ""))
         attrs = getattr(article, "attributes", [])
         attrs_txt = [str(a) for a in attrs]
-        # Couleur pas nécessaire ici ; SeasonalClassifier la prend en compte si fournie
+
         try:
-            # SeasonalClassifier.classify_season(category_name, attributes, color_analysis)
-            pred = self.seasonal_classifier.classify_season(cat, attrs_txt, None)
+            color_info = self._get_color_analysis(article)  # NEW: analyse réelle de la photo
+            pred = self.seasonal_classifier.classify_season(cat, attrs_txt, color_info)
+
             label = str(getattr(pred, "predicted_season", ""))
-            if not label:
+           
+            en2fr = {"summer": "été", "winter": "hiver", "spring": "printemps", "fall": "automne"}
+            label_norm = en2fr.get(_norm(label), _norm(label))
+
+            if not label_norm:
                 return 0.0
-            return 1.0 if _norm(label) == _norm(prefs.season) else 0.0
-        except Exception:
+            return 1.0 if label_norm == _norm(prefs.season) else 0.0
+        except Exception as e:
+            print("Erreur score saison:", e)
             return 0.0
 
-    # --------------------- Scores globaux ---------------------
 
     def article_preference_score(self, article, prefs: Optional[UserPreferences]) -> float:
         if not prefs:
@@ -306,7 +392,6 @@ class PreferenceScorer:
         items = list(getattr(outfit, "items", []))
         if not items:
             return 0.0
-        # moyenne des scores par item
         scores = [self.article_preference_score(it, prefs) for it in items]
         if not scores:
             return 0.0
@@ -314,23 +399,22 @@ class PreferenceScorer:
 
 
 # ------------------------- Rerank helper -------------------------
-# Dans user_preferences.py, vérifiez que cette fonction existe et fonctionne :
 def apply_preference_rerank(outfits, preferences, w_pref=0.25, color_analyzer=None, seasonal_classifier=None):
     scorer = PreferenceScorer(color_analyzer=color_analyzer, seasonal_classifier=seasonal_classifier)
     if not preferences or not outfits:
         return outfits
-    
-    scorer = PreferenceScorer()
+
     for outfit in outfits:
         try:
             pref_score = scorer.outfit_preference_score(outfit, preferences)
             outfit.preference_score = float(pref_score)
             base_score = float(getattr(outfit, "coherence_score", 0.0))
             outfit.rank_score = (1.0 - w_pref) * base_score + w_pref * pref_score
+            print(f"[RERANK] base={base_score:.3f} pref={pref_score:.3f} → final={outfit.rank_score:.3f}")
         except Exception as e:
-            print(f"Erreur rerank préférences: {e}")
             outfit.preference_score = 0.0
             outfit.rank_score = float(getattr(outfit, "coherence_score", 0.0))
     
     # Trier par rank_score décroissant
     return sorted(outfits, key=lambda x: getattr(x, "rank_score", 0.0), reverse=True)
+

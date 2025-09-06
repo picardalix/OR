@@ -3,6 +3,8 @@ import streamlit as st
 from pathlib import Path
 from PIL import Image
 import os
+import io
+from glob import glob
 import pandas as pd
 from user_preferences import UserPreferences, PreferenceScorer, apply_preference_rerank
 
@@ -106,38 +108,85 @@ if "new_similar_idx" not in st.session_state:
 
 
 # ==================== FONCTIONS UTILITAIRES ====================
-def _explain_outfit_safe(system, outfit) -> dict:
-    try:
-        if hasattr(system, "explain_outfit"):
-            return system.explain_outfit(outfit) or {}
-        if hasattr(system, "recommender") and hasattr(system.recommender, "explain_outfit"):
-            return system.recommender.explain_outfit(outfit) or {}
-    except Exception:
-        pass
 
+def _resolve_display_path(art):
+    # Priorité à display_path (JPG)
+    p = getattr(art, "display_path", None)
+    if p and os.path.exists(p):
+        return p
+    # Sinon, tenter le même nom en .jpg
+    cand = (getattr(art, "crop_path", None)
+            or getattr(art, "feature_path", None)
+            or getattr(art, "image_path", None))
+    if cand:
+        jpg = str(Path(cand).with_suffix(".jpg"))
+        if os.path.exists(jpg):
+            return jpg
+        if os.path.exists(cand):
+            return cand
+    return getattr(art, "image_path", None)
+
+def safe_get_color_summaries(system, outfit):
+    adv = getattr(outfit, "advanced_score", None)
+    summaries = getattr(adv, "item_color_summaries", None) if adv else None
+    return summaries
+
+
+def _explain_outfit_safe(system, outfit) -> dict:
     analysis = {}
-    analysis["season"] = {
-        "label": getattr(outfit, "season_label", None) or getattr(outfit, "season", None) or "inconnue",
-        "confidence": float(getattr(outfit, "season_confidence", 0.0)),
-    }
-    analysis["redundancy"] = float(getattr(outfit, "redundancy", 0.0))
-    pairs = getattr(outfit, "harmonious_pairs", None)
+    
+    adv = getattr(outfit, "advanced_score", None)
+    season_label = (
+        getattr(outfit, "season_label", None)
+        or getattr(outfit, "season", None)
+        or (getattr(adv, "predicted_season", None) if adv else None)
+        or (getattr(adv, "season_label", None) if adv else None)
+        or "inconnue"
+    )
+    season_conf = float(
+        getattr(outfit, "season_confidence", None)
+        or (getattr(adv, "season_confidence", None) if adv else 0.0)
+        or (getattr(adv, "seasonal_coherence", 0.0) if adv else 0.0)
+    )
+    analysis["season"] = {"label": season_label, "confidence": season_conf}
+
+    redundancy = float(
+        getattr(outfit, "redundancy", None)
+        or (getattr(adv, "redundancy", 0.0) if adv else 0.0)
+    )
+    analysis["redundancy"] = redundancy
+
+    pairs = (
+        getattr(outfit, "harmonious_pairs", None)
+        or (getattr(adv, "harmonious_pairs", None) if adv else None)
+        or (getattr(adv, "color_pairs", None) if adv else None)
+    )
     analysis["color_harmony"] = {"ok": bool(pairs), "pairs": pairs or []}
 
+    # --- Détails scores par item (comme avant)
     rows = []
     for it in getattr(outfit, "items", []):
+        sdict = getattr(it, "scores", {}) or {}
+        cosine = getattr(it, "cosine", None) or sdict.get("cosine")
+        color_score = getattr(it, "color_score", None)
+        if color_score is None:
+            color_score = sdict.get("color") or sdict.get("color_harmony")
+        season_score = getattr(it, "season_score", None) or sdict.get("season")
+
         rows.append({
             "slot": getattr(it, "group", getattr(it, "slot", None)),
             "item_id": getattr(it, "id", None),
             "name": getattr(it, "category_name", "") or getattr(it, "name", ""),
-            "cosine": getattr(it, "cosine", None),
-            "color_score": getattr(it, "color_score", None),
-            "season_score": getattr(it, "season_score", None),
+            "cosine": cosine,
+            "color_score": color_score,
+            "season_score": season_score,
         })
     analysis["item_scores"] = rows
 
-    print("SCORES ITEMS:", [(r["item_id"], r["cosine"], r["color_score"], r["season_score"]) for r in rows])
+    # --- NOUVEAU : résumés couleurs par item (palette/tonalité/temp/saturation/score)
+    analysis["item_color_summaries"] = safe_get_color_summaries(system, outfit)
 
+    print("SCORES ITEMS:", [(r["item_id"], r["cosine"], r["color_score"], r["season_score"]) for r in rows])
     return analysis
 
 
@@ -165,27 +214,106 @@ def format_explanation_md(analysis: dict) -> str:
     return "\n".join(lines)
 
 
+
 def show_item_scores_table(analysis: dict):
+    """Affiche le tableau des scores + une vignette par item."""
     items = analysis.get("item_scores", []) or []
     if not items:
         return
+
     df = pd.DataFrame(items)
 
-    keep_cols = [c for c in ["slot", "item_id", "name", "cosine", "color_score", "season_score"] if c in df.columns]
+    # Colonnes utiles
+    keep_cols = [c for c in ["slot", "item_id", "name", "cosine", "color_score", "season_score"]
+                 if c in df.columns]
     if keep_cols:
         df = df[keep_cols]
 
-    num_cols = [c for c in ["cosine", "color_score", "season_score", "style", "pairwise", "pref"]
-            if c in df.columns]
-    for c in num_cols:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).round(3)
+    # Mise au propre des numériques
+    for c in ["cosine", "color_score", "season_score", "style", "pairwise", "pref"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).round(3)
 
+    # Helper: retrouve un chemin d'image pour l'item
+    def _resolve_img_path(row: pd.Series) -> str | None:
+        row_item = str(row.get("item_id") or "").strip()
+        if not row_item:
+            return None
 
-    if {"slot","cosine"}.issubset(df.columns):
+        _system = globals().get("system", None)
+        art = None
+        if _system:
+            try:
+                art = _system.get_article(row_item)
+                if art is not None:
+                    p = _resolve_display_path(art)
+                    print("path display path : ",p)
+                    if p and os.path.exists(p):
+                        return p
+            except Exception:
+                art = None
+
+        crop_dir = st.session_state.get("crop_dir")
+        if not crop_dir:
+            return None
+        item_id = str(row.get("item_id") or "").strip()
+
+        candidates = []
+        if item_id:
+            candidates += [
+                os.path.join(crop_dir, f"{item_id}.png"),
+                os.path.join(crop_dir, f"{item_id}.jpg"),
+            ]
+    
+        for cand in candidates:
+            if os.path.exists(cand):
+                print("candidat :", cand)
+                return cand
+
+        return None
+
+    df["__img_path"] = df.apply(_resolve_img_path, axis=1)
+    if {"slot", "cosine"}.issubset(df.columns):
         df = df.sort_values(["slot", "cosine"], ascending=[True, False]).reset_index(drop=True)
 
     st.markdown("#### Détails des scores")
-    st.dataframe(df, use_container_width=True)
+    
+    # Affichage en colonnes avec images
+    for idx, row in df.iterrows():
+        with st.container():
+            col_img, col_info = st.columns([1, 4])
+            
+            with col_img:
+                img_path = row.get("__img_path")
+                if img_path and os.path.exists(img_path):
+                    st.image(img_path, width=80)
+                else:
+                    st.write("📦")  # Icône de remplacement
+            
+            with col_info:
+                # Titre avec slot et nom
+                slot = row.get("slot", "unknown")
+                name = row.get("name", "")
+                item_id = row.get("item_id", "")
+                st.write(f"**{slot.upper()}** - {name} `({item_id})`")
+                
+                # Métriques en ligne
+                score_cols = st.columns(3)
+                with score_cols[0]:
+                    cosine = row.get("cosine", 0)
+                    if cosine:
+                        st.metric("Similarité", f"{cosine:.3f}")
+                with score_cols[1]:
+                    color_score = row.get("color_score", 0)
+                    if color_score:
+                        st.metric("Couleur", f"{color_score:.3f}")
+                with score_cols[2]:
+                    season_score = row.get("season_score", 0)
+                    if season_score:
+                        st.metric("Saison", f"{season_score:.3f}")
+            
+            if idx < len(df) - 1:  # Séparateur sauf pour le dernier
+                st.divider()
 
 def _get_top_candidates_safe(system, query_image_path: str, slot: str, k: int, exclude_paths: set[str] | None = None):
     """Récupère les top-K candidats pour un slot donné, normalisés en List[Article]."""
@@ -274,7 +402,8 @@ def show_candidates_gallery(system, query_image_path: str, slots=("top", "bottom
                 col_idx = idx % 3
                 with cols[col_idx]:
 
-                    path = getattr(item, "crop_path", None) or getattr(item, "image_path", None)
+                    #path = getattr(item, "crop_path", None) or getattr(item, "image_path", None)
+                    path = _resolve_display_path(item)
                     if path and os.path.exists(path):
                         st.image(path, width=150)
 
@@ -315,6 +444,69 @@ def display_outfit_result(outfit_view):
             st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('</div>', unsafe_allow_html=True)
+
+def analyze_query_image_colors(system, query_path: str) -> dict:
+    if not (query_path and os.path.exists(query_path)):
+        return {"dominant_colors": None, "color_temperature": None, "saturation_level": None, "color_score": None}
+    try:
+        from pathlib import Path
+        p = Path(query_path)
+        if p.suffix.lower() in (".jpg", ".jpeg"):
+            cand = p.with_suffix(".png")
+            if cand.exists():
+                query_path = str(cand)
+    except Exception:
+        pass
+    try:
+        ca = system.recommender.advanced_scorer.color_analyzer.analyze_colors(query_path)
+        return {
+            "dominant_colors": getattr(ca, "dominant_colors", None),
+            "color_temperature": getattr(ca, "color_temperature", None),
+            "saturation_level": getattr(ca, "saturation_level", None),
+            "color_score": float(getattr(ca, "color_harmony_score", 0.0))
+        }
+    except Exception as e:
+        print("Query color analysis error:", e)
+        return {"dominant_colors": None, "color_temperature": None, "saturation_level": None, "color_score": None}
+
+# ---------- Helpers d'affichage ----------
+
+def _rgb_to_hex(rgb):
+    if not rgb: 
+        return "#000000"
+    r, g, b = [int(max(0, min(255, x))) for x in rgb]
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+def render_color_swatches(colors, label="Palette"):
+    if not colors:
+        st.caption(f"{label} : —")
+        return
+    st.caption(label)
+    cols = st.columns(len(colors))
+    for i, c in enumerate(colors):
+        hexc = _rgb_to_hex(c)
+        with cols[i]:
+            st.markdown(
+                f"""
+                <div style="border-radius:8px;width:100%;height:40px;border:1px solid #ddd;background:{hexc};"></div>
+                <div style="font-size:12px;margin-top:4px;text-align:center;">{hexc}</div>
+                """, unsafe_allow_html=True
+            )
+
+def describe_color_summary(summary: dict) -> str:
+    if not summary:
+        return "Pas d’analyse couleur disponible."
+    temp = summary.get("color_temperature")
+    sat = summary.get("saturation_level")
+    score = summary.get("color_score")
+    parts = []
+    if temp: parts.append(f"température **{temp}**")
+    if sat: parts.append(f"saturation **{sat}**")
+    if score is not None: parts.append(f"harmonie **{score:.2f}**")
+    if not parts:
+        return "Analyse couleur non déterminée."
+    return " ; ".join(parts)
+
 
 #---- Verrouillage des items
 
@@ -374,7 +566,8 @@ def show_locked_items(system= None):
 
     for i, (slot, art) in enumerate(active_locks.items()):
         with cols[i]:
-            path = getattr(art, "crop_path", None) or getattr(art, "image_path", None)
+            #path = getattr(art, "crop_path", None) or getattr(art, "image_path", None)
+            path = _resolve_display_path(art)
             if path and os.path.exists(path):
                 st.image(path, width=120)
             label = getattr(art, "category_name", None) or f"#{getattr(art, 'id', '?')}"
@@ -401,7 +594,7 @@ def _normalize_active_locks_for_builder(system, locks: dict):
 
 # ==================== INITIALISATION SYSTÈME ====================
 @st.cache_resource
-def initialize_system():
+def initialize_system(feature_mode: str = "auto_png"):   # <-- ajout du paramètre
     """Initialise le système de recommandation (une seule fois)"""
     try:
         ANN_FILE = "images/fashionpedia/instances_attributes_train2020.json"
@@ -413,8 +606,13 @@ def initialize_system():
             with open(ANN_FILE, "r") as f:
                 _ = json.load(f)
 
-        system = FashionRecommendationSystem(ANN_FILE, IMG_DIR, CROP_DIR, ann_backend="faiss")
-        system.initialize(max_articles=1500)
+        system = FashionRecommendationSystem(
+            ANN_FILE, IMG_DIR, CROP_DIR,
+            ann_backend="faiss",
+            feature_mode=feature_mode
+        )
+        system.initialize(max_articles=1000)
+        st.session_state["crop_dir"] = CROP_DIR
         return system, True
     except Exception as e:
         st.error(f"Erreur d'initialisation: {e}")
@@ -430,7 +628,9 @@ st.markdown("""
 
 # Initialisation du système
 with st.spinner("Initialisation du système de recommandation..."):
-    system, ok = initialize_system()
+    feature_mode = st.session_state.get("feature_mode", "auto_png")
+    system, ok = initialize_system(feature_mode)
+    
 
 if not ok or system is None:
     st.error(" Impossible d'initialiser le système. Vérifiez les fichiers de données.")
@@ -450,6 +650,15 @@ with st.sidebar:
                     st.write(f"• **{group}**: {len(ids)} articles")
             except Exception:
                 pass
+
+    st.markdown("### Options d'ablation")
+    _feature_choice = st.radio(
+        "Source des features (couleurs / embeddings)",
+        options=["PNG si dispo (fallback JPG)", "JPG uniquement"],
+        index=0,
+        help="Affichage utilisateur : toujours JPG de crops_v2. Ce réglage ne concerne que les calculs."
+    )
+    st.session_state["feature_mode"] = "auto_png" if _feature_choice.startswith("PNG") else "jpg_only"
 
     # Image source
     st.markdown("**Image source**")
@@ -492,48 +701,40 @@ if not st.session_state.get("query_path"):
         img = Image.open(uploaded).convert("RGB")
         st.session_state["uploaded_preview"] = uploaded.getvalue()
 
-        
-        left, right = st.columns([1, 1])
+        st.markdown("#### Vos préférences")
 
-        with left:
-            st.markdown("#### Votre image")
-            st.image(img, caption="Image d'entrée", use_container_width=True, width=150)
+        # Widgets "principaux" 
+        pref_text = st.text_area(
+            "Décrivez vos préférences",
+            value=st.session_state.get("pref_text", ""),
+            height=100, key="pref_text"
+        )
+        pref_items = st.multiselect(
+            "Pièces recherchées", ["top","bottom","dress","shoes","accessories"], key="pref_items"
+        )
+        pref_colors = st.multiselect(
+            "Couleurs", ["noir","blanc","gris","rouge","orange","jaune","vert","bleu","violet","rose","marron","beige","kaki","marine","bordeaux"],
+            key="pref_colors"
+        )
+        pref_season = st.selectbox(
+            "Saison", ["", "hiver","printemps","été","automne","mi-saison"], key="pref_season"
+        )
+        st.session_state["pref_weight"] = st.slider(
+            "Poids des préférences (rerank)", 0.0, 1.0, st.session_state.get("pref_weight", 0.35), 0.05,
+            help="0 = ignorer les préférences, 1 = trier principalement selon vos préférences",
+            key="pref_weight_slider"
+        )
 
-        with right:
-            st.markdown("#### Vos préférences")
-
-            # Widgets "principaux" 
-            pref_text = st.text_area(
-                "Décrivez vos préférences",
-                value=st.session_state.get("pref_text", ""),
-                height=100, key="pref_text"
-            )
-            pref_items = st.multiselect(
-                "Pièces recherchées", ["top","bottom","dress","shoes","accessories"], key="pref_items"
-            )
-            pref_colors = st.multiselect(
-                "Couleurs", ["noir","blanc","gris","rouge","orange","jaune","vert","bleu","violet","rose","marron","beige","kaki","marine","bordeaux"],
-                key="pref_colors"
-            )
-            pref_season = st.selectbox(
-                "Saison", ["", "hiver","printemps","été","automne","mi-saison"], key="pref_season"
-            )
-            st.session_state["pref_weight"] = st.slider(
-                "Poids des préférences (rerank)", 0.0, 1.0, st.session_state.get("pref_weight", 0.35), 0.05,
-                help="0 = ignorer les préférences, 1 = trier principalement selon vos préférences",
-                key="pref_weight_slider"
-            )
-
-            # Construire l'objet prefs et le garder en session
-            prefs = None
-            try:
-                prefs = UserPreferences.from_text(pref_text or "")
-                if pref_items:  prefs.desired_items = pref_items
-                if pref_colors: prefs.colors = pref_colors
-                if pref_season: prefs.season = pref_season or None
-            except Exception as e:
-                st.warning(f"Analyse des préférences impossible: {e}")
-            st.session_state["user_prefs"] = prefs
+        # Construire l'objet prefs et le garder en session
+        prefs = None
+        try:
+            prefs = UserPreferences.from_text(pref_text or "")
+            if pref_items:  prefs.desired_items = pref_items
+            if pref_colors: prefs.colors = pref_colors
+            if pref_season: prefs.season = pref_season or None
+        except Exception as e:
+            st.warning(f"Analyse des préférences impossible: {e}")
+        st.session_state["user_prefs"] = prefs
 
         st.markdown('<div class="actions-container">', unsafe_allow_html=True)
         col1, col2, col3 = st.columns([1, 2, 1])
@@ -558,15 +759,20 @@ if not st.session_state.get("query_path"):
                     st.session_state["target_groups"] = default_groups
 
                 with st.spinner("Création de la tenue..."):
-                    outfit = system.get_recommendation(
+
+                    outfits = system.get_recommendations_builder(
                         query_image_path=query_path,
-                        target_groups=st.session_state["target_groups"],
-                        similarity_threshold=0.3,
-                        use_advanced_scoring=True,
+                        slots=st.session_state["target_groups"],
+                        topk_per_slot=12,
+                        beam_size=12,
+                        max_outfits=5,
+                        rules={"limit_outer": True, "avoid_print_clash": True},
+                        locks={},  # pas de locks pour la première génération
                         preferences=st.session_state.get("user_prefs"),
-                        pref_weight=st.session_state.get("pref_weight", 0.35) 
+                        pref_weight=st.session_state.get("pref_weight", 0.35)
                     )
-                    print("pref 11 : ",st.session_state.get("user_prefs"))
+                    outfit = outfits[0] if outfits else None 
+                st.session_state["new_similar_idx"] = 0
                 st.session_state["query_path"] = query_path
 
                 if outfit:
@@ -584,7 +790,8 @@ if not st.session_state.get("query_path"):
                     src = st.session_state.get("query_path")
                     view_items = []
                     for art in outfit.items:
-                        p = getattr(art, "crop_path", None) or getattr(art, "image_path", None)
+                        #p = getattr(art, "crop_path", None) or getattr(art, "image_path", None)
+                        p = _resolve_display_path(art)
                         if p and src and os.path.abspath(p) == os.path.abspath(src):
                             continue
                         view_items.append({
@@ -613,11 +820,8 @@ else:
     # === TAB 1: RÉSULTATS ===
     with tab1:
 
-        if st.session_state.get("query_path"):
+        if st.session_state.get("query_path") and st.session_state.get("ui_mode") != "result":
             hdr_left, hdr_right = st.columns([1, 1])
-            with hdr_left:
-                st.markdown("#### Image d'entrée") #enlever ici ??
-                st.image(st.session_state["query_path"], use_container_width=True)
             with hdr_right:
                 st.markdown("#### Préférences")
                 prefs = st.session_state.get("user_prefs")
@@ -661,7 +865,6 @@ else:
                         locks=active_locks, 
                         preferences=st.session_state.get("user_prefs")
                     )
-                    print("pref 10 : ",st.session_state.get("user_prefs"))
 
                     # rerank par préférences si présent
                     if outfits and st.session_state.get("user_prefs"):
@@ -693,7 +896,8 @@ else:
 
                     view_items = []
                     for art in outfit2.items:
-                        p = getattr(art, "crop_path", None) or getattr(art, "image_path", None)
+                        #p = getattr(art, "crop_path", None) or getattr(art, "image_path", None)
+                        p = _resolve_display_path(art)
                         # on skippe la source SEULEMENT si ce n'est pas un lock
                         if p and src and os.path.abspath(p) == os.path.abspath(src) and (not locked_paths or os.path.abspath(p) not in locked_paths):
                             continue
@@ -739,12 +943,37 @@ else:
             st.markdown("---")
             st.markdown("### Explications")
             analysis = st.session_state["last_outfit_view"].get("analysis")
+
             if analysis:
+                # ---- (1) Affichage global existant (si tu as déjà format_explanation_md)
                 st.markdown(format_explanation_md(analysis))
+
+                # ---- (2) Image requête : palette & résumé
+                qp = st.session_state.get("query_path")
+                if qp:
+                    qsum = analyze_query_image_colors(system, qp)  # NEW
+                    st.markdown("#### Image requête — Couleurs")
+                    render_color_swatches(qsum.get("dominant_colors"), label="Palette dominante")  # NEW
+                    st.write("• " + describe_color_summary(qsum))  # NEW
+                    st.markdown("---")
+
+                # ---- (3) Détails des scores (comme avant)
                 with st.expander(" Détails des scores par item"):
                     show_item_scores_table(analysis)
+
+                    item_summaries = analysis.get("item_color_summaries") or []
+                    if item_summaries:
+                        st.markdown("#### Explications visuelles par article")
+                        for s in item_summaries:
+                            iid = s.get("item_id")
+                            cat = s.get("category") or "item"
+                            st.markdown(f"**{cat}** — *{iid}*")
+                            render_color_swatches(s.get("dominant_colors"), label="Palette dominante")
+                            st.write("• " + describe_color_summary(s))
+                            st.markdown("")  # petit espace
             else:
                 st.caption("Aucune analyse disponible pour cette tenue.")
+
 
         else:
             st.info("Aucune tenue à afficher. Utilisez les autres onglets pour explorer.")
@@ -806,13 +1035,50 @@ else:
                             cols = st.columns(len(outfit.items))
                             for col, art in zip(cols, outfit.items):
                                 with col:
-                                    path = getattr(art, "crop_path", None) or art.image_path
+
+                                    path = _resolve_display_path(art)
                                     if path and os.path.exists(path):
                                         st.image(path, width=150)
                                     st.caption(f"**{getattr(art, 'category_name', 'Item')}**")
                                     st.markdown('</div>', unsafe_allow_html=True)
                             st.markdown('</div>', unsafe_allow_html=True)
                             analysis_i = _explain_outfit_safe(system, outfit)
+
+                            with st.expander("🔎 Diagnostic préférences (par item)"):
+                                prefs = st.session_state.get("user_prefs")
+                                if prefs:
+                                    from user_preferences import PreferenceScorer
+                                    import pandas as pd
+
+                                    ps = PreferenceScorer(
+                                        color_analyzer=system.recommender.color_analyzer,
+                                        seasonal_classifier=system.recommender.season_classifier
+                                    )
+
+                                    rows = []
+                                    # si tu as l'outfit courant sous la main :
+                                    for art in outfit.items:   # ou outfit2.items / option.items selon le contexte
+                                        try:
+                                            s_item = ps._score_item(art, prefs)
+                                            s_col  = ps._score_color(art, prefs)
+                                            s_sea  = ps._score_season(art, prefs)
+                                            rows.append({
+                                                "id": getattr(art, "id", None),
+                                                "slot": getattr(art, "group", ""),
+                                                "cat": getattr(art, "category_name", ""),
+                                                "pref_item": round(s_item, 3),
+                                                "pref_color": round(s_col, 3),
+                                                "pref_season": round(s_sea, 3),
+                                                "pref_total(art)": round(ps.w_item*s_item + ps.w_color*s_col + ps.w_season*s_sea, 3)
+                                            })
+                                        except Exception as e:
+                                            rows.append({"id": getattr(art,"id",None), "error": str(e)})
+
+                                    if rows:
+                                        st.dataframe(pd.DataFrame(rows), use_container_width=True)
+                                else:
+                                    st.caption("Aucune préférence fournie.")
+
                             with st.expander(" Explications de cette option"):
                                 st.markdown(format_explanation_md(analysis_i))
                                 with st.expander("Scores détaillés par item", expanded=False):
@@ -821,7 +1087,8 @@ else:
                                 src = st.session_state.get("query_path")
                                 view_items = []
                                 for art in outfit.items:
-                                    p = getattr(art, "crop_path", None) or getattr(art, "image_path", None)
+                                    #p = getattr(art, "crop_path", None) or getattr(art, "image_path", None)
+                                    p = _resolve_display_path(art)
                                     if p and src and os.path.abspath(p) == os.path.abspath(src):
                                         continue
                                     view_items.append({
@@ -951,7 +1218,8 @@ else:
                                     src = st.session_state.get("query_path")
                                     view_items = []
                                     for art in outfit.items:
-                                        p = getattr(art, "crop_path", None) or getattr(art, "image_path", None)
+                                        #p = getattr(art, "crop_path", None) or getattr(art, "image_path", None)
+                                        p = _resolve_display_path(art)
                                         if p and src and os.path.abspath(p) == os.path.abspath(src):
                                             continue
                                         view_items.append({
@@ -971,7 +1239,8 @@ else:
                             item_cols = st.columns(len(outfit.items))
                             for col, art in zip(item_cols, outfit.items):
                                 with col:
-                                    path = getattr(art, "crop_path", None) or art.image_path
+                                 
+                                    path = _resolve_display_path(art)
                                     if path and os.path.exists(path):
                                         st.image(path, width=140)
                                     st.markdown(f"**{getattr(art, 'category_name', 'Item')}**")
