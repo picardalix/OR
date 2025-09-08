@@ -960,20 +960,25 @@ class OutfitRecommender:
 
         """Construit des tenues par slots, applique filtres qualité et rerank préférences."""
         pref_weight = float(max(0.0, min(1.0, pref_weight)))
-
+        print(f"[Recommender] recommend_outfits_builder with slots={slots}, topk_per_slot={topk_per_slot}, beam_size={beam_size}, max_outfits={max_outfits}, pref_weight={pref_weight}")
         # 1) Embedding requête
         #query_image_path = self._prefer_png(query_image_path)
         q_embs = self.emb_gen.generate_embeddings([query_image_path])
 
         if not q_embs or q_embs[0] is None:
+            print("[Recommender] No embedding for query image")
             return []
         q = np.asarray(q_embs[0])
 
-        # (Optionnel, recommandé) Exclure le slot détecté pour compléter la tenue
         if slots and len(slots) > 1:
             detected = self._detect_query_group(q)
-            if detected and detected in slots:
+            print(f"[Recommender] Detected group: {detected}")
+            wants_detected = False
+            if preferences:
+                wants_detected = (detected in (preferences.desired_items or []))
+            if detected and detected in slots and not wants_detected:
                 slots = [s for s in slots if s != detected]
+
 
         ps = PreferenceScorer(
             color_analyzer=self.advanced_scorer.color_analyzer,
@@ -982,6 +987,7 @@ class OutfitRecommender:
 
         slot_to_cands = {}
         for slot in slots:
+            print(f"[Recommender] Processing slot: {slot}")
             pool = self.engine.ann_search(q, slot, topk=max(self.pool_size, topk_per_slot))
             if not pool:
                 slot_to_cands[slot] = []
@@ -992,6 +998,7 @@ class OutfitRecommender:
             for sim_q, idx, emb in pool:
                 cand = self.engine.articles[idx]
                 pref_item = ps.article_preference_score(cand, preferences) if ps else 0.0
+                print(f"  [CAND] id={getattr(cand, 'id', None)} sim_q={sim_q:.3f} pref_item={pref_item:.3f}")
                 relevance = self.w_cos * float(sim_q) + float(pref_weight) * float(pref_item)
                 scored.append((relevance, idx, emb))
             scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
@@ -999,6 +1006,56 @@ class OutfitRecommender:
             mmr_in = [(rel, idx, emb) for (rel, idx, emb) in scored]
             order = mmr_rerank(mmr_in, selected_embs=[], lambda_div=self.mmr_lambda, topk=topk_per_slot)
             cand_articles = [self.engine.articles[i] for i in order]
+
+            # ps existe déjà si preferences
+            ensure_k_color   = max(1, int(topk_per_slot * 0.6))  # on veut ~60% qui matchent la couleur
+            explore_ratio    = 0.3                               # ~30% reste exploration pure
+            expanded_topk    = max(self.pool_size * 3, 300)      # 2e recherche plus large au besoin
+
+            def _color_ok(a):
+                if not ps or not preferences or not (preferences.colors):
+                    return False
+                try:
+                    return ps._score_color(a, preferences) >= 0.5
+                except Exception:
+                    return False
+
+            def _subtype_ok(a):
+                if slot != "bottom" or not preferences or not getattr(preferences, "bottom_types", None):
+                    return False
+                cat = str(getattr(a, "category_name", "")).lower()
+                return any(bt in cat for bt in preferences.bottom_types)
+
+            # 1) on marque les candidats actuels
+            c_match = [a for a in cand_articles if _color_ok(a) or _subtype_ok(a)]
+            c_rest  = [a for a in cand_articles if a not in c_match]
+
+            # 2) si pas assez de match, on refait une ANN plus large et on complète
+            if len(c_match) < ensure_k_color and (preferences and (preferences.colors or getattr(preferences, "bottom_types", None))):
+                pool2 = self.engine.ann_search(q, slot, topk=expanded_topk)
+                extra = [self.engine.articles[i] for (_, i, _) in pool2]
+                extra = [a for a in extra if (a not in cand_articles) and (_color_ok(a) or _subtype_ok(a))]
+                # on complète jusqu'à ensure_k_color
+                need = ensure_k_color - len(c_match)
+                c_match += extra[:max(0, need)]
+
+            # 3) Recompose la liste finale : une part “match”, une part “explore”
+            final = []
+            n_explore = int(topk_per_slot * explore_ratio)
+            # on garde un peu d’exploration brute (déjà classée par relevance + MMR)
+            final += c_rest[:n_explore]
+            # puis on complète majoritairement avec des éléments qui matchent
+            for a in c_match:
+                if a not in final:
+                    final.append(a)
+            # puis on termine avec le reste
+            for a in c_rest[n_explore:]:
+                if len(final) >= topk_per_slot:
+                    break
+                if a not in final:
+                    final.append(a)
+
+            cand_articles = final[:topk_per_slot]
 
             # 2.c Locks : l'article verrouillé va en tête + dédup
             if locks and locks.get(slot):
@@ -1029,6 +1086,7 @@ class OutfitRecommender:
         # 4) Filtres qualité + auto-relax (inchangé)
         def pass_with(outf, ms, mc, mo):
             adv = self.advanced_scorer.calculate_advanced_score(outf.items, outf.similarities)
+            print(f"[FILTER] Outfit items {[getattr(i,'id',None) for i in outf.items]} -> scores: seasonal={adv.seasonal_coherence:.3f} (min {ms}), color={adv.color_harmony:.3f} (min {mc}), overall={adv.overall_score:.3f} (min {mo})")
             return (adv.seasonal_coherence >= ms and adv.color_harmony >= mc and adv.overall_score >= mo), adv
 
         ms0 = self.outfit_filter.min_seasonal_coherence
@@ -1070,7 +1128,6 @@ class OutfitRecommender:
                         except Exception:
                             pass
 
-                    # chemin image (reprend ta logique _image_path_for_item du module)
                     img_path = None
                     p = getattr(it, "crop_path", None) or getattr(it, "image_path", None)
                     if p and os.path.exists(p):
@@ -1100,12 +1157,23 @@ class OutfitRecommender:
                             season_score = float(getattr(sp, "confidence", 0.0))
                         except Exception:
                             pass
+                    pref_score = 0.0
+                    if preferences:
+                        try:
+                            ps = PreferenceScorer(
+                                color_analyzer=self.advanced_scorer.color_analyzer,
+                                seasonal_classifier=self.advanced_scorer.seasonal_classifier
+                            )
+                            pref_score = float(ps.article_preference_score(it, preferences))
+                        except Exception as e:
+                            print(f"[builder] erreur calcul pref pour item {getattr(it, 'id', '?')}: {e}")
 
-                    it.scores = {"cosine": cos, "color": color_score, "season": season_score}
+                    it.scores = {"cosine": cos, "color": color_score, "season": season_score, "pref": pref_score}
                     # pour compat UI
                     it.cosine = cos
                     it.color_score = color_score
                     it.season_score = season_score
+                    it.pref_score = pref_score
             except Exception as e:
                 print("[builder] populate item scores failed:", e)
 

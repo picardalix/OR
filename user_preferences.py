@@ -118,6 +118,8 @@ class UserPreferences:
     exclude_items: List[str] = field(default_factory=list)
     exclude_colors: List[str] = field(default_factory=list)
 
+    bottom_types: List[str] = field(default_factory=list)
+
     @staticmethod
     def from_text(text: str) -> "UserPreferences":
         """Parser minimaliste en FR pour extraire items, couleurs, saison, style."""
@@ -126,12 +128,22 @@ class UserPreferences:
         items, colors, styles = [], [], []
         season: Optional[str] = None
         excl_items, excl_colors = [], []
+        bottom_types = []
 
         # Extractions simples par mots-clés
         for word, key in _ITEM_KEYWORDS.items():
             if re.search(rf"\b{re.escape(word)}s?\b", t):
                 print(f"DEBUG: Trouvé item '{word}' -> '{key}'") 
                 items.append(key)
+
+        for w in ["jupe", "short", "pantalon", "jean"]:
+            if re.search(rf"\b{w}s?\b", t):
+                if "bottom" not in items:
+                    items.append("bottom")
+                if w == "jean":
+                    bottom_types.append("pantalon")
+                else:
+                    bottom_types.append(w)
 
         for word, key in _COLOR_KEYWORDS.items():
             if re.search(rf"\b{re.escape(word)}s?\b", t):
@@ -161,6 +173,7 @@ class UserPreferences:
             style=_unique(styles),
             exclude_items=_unique(excl_items),
             exclude_colors=_unique(excl_colors),
+            bottom_types=_unique(bottom_types)
         )
 
 
@@ -316,12 +329,21 @@ class PreferenceScorer:
         if not prefs.desired_items and not prefs.exclude_items:
             return 0.0
         group = str(getattr(article, "group", "")).lower()
-        cat = str(getattr(article, "category_name", "")).lower()
+        cat   = str(getattr(article, "category_name", "")).lower()
+
         wanted = (group in prefs.desired_items) or (cat in prefs.desired_items)
         unwanted = (group in prefs.exclude_items) or (cat in prefs.exclude_items)
         if unwanted and not wanted:
             return 0.0
-        return 1.0 if wanted else 0.0
+
+        base = 1.0 if wanted else 0.0
+
+        # si on a demandé un type précis de bas
+        if group == "bottom" and getattr(prefs, "bottom_types", None):
+            if any(bt in cat for bt in prefs.bottom_types):
+                base = min(1.0, base + 0.5)
+
+        return float(base)
 
     def _score_color(self, article, prefs: UserPreferences) -> float:
         if not self.color_analyzer or not prefs.colors:
